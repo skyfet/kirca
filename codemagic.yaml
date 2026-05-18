@@ -1,20 +1,42 @@
-# Codemagic CI/CD for Flutter iOS → TestFlight
+# Codemagic CI/CD — Flutter iOS → unsigned IPA → R2 → Scarlet
 #
-# Файл лежит в корне репы — Codemagic берёт его автоматически.
+# Что делает:
+# 1. Генерит ios/android папки (мы их не коммитим)
+# 2. Патчит bundle id на ai.kirca.app
+# 3. Собирает release IPA БЕЗ подписи (--no-codesign)
+# 4. Пакует в IPA
+# 5. Генерит Scarlet source.json
+# 6. Заливает IPA + source.json в Cloudflare R2
 #
-# Перед первым запуском в codemagic.io:
-# 1. Подключи репо.
-# 2. Teams → Integrations → App Store Connect: добавь Issuer ID, Key ID, .p8 (имя интеграции — `codemagic`).
-# 3. Environment variables → group `app_store_credentials`:
-#    - APP_STORE_CONNECT_PRIVATE_KEY (содержимое .p8)
-#    - APP_STORE_CONNECT_KEY_IDENTIFIER
-#    - APP_STORE_CONNECT_ISSUER_ID
-# 4. В App Store Connect создай приложение с bundle id `ai.kirca.app`.
-# 5. (Опционально) TestFlight → создай группу "Internal Testers".
+# Никакого Apple Developer / App Store Connect не нужно.
+# Тестеры ставят через Scarlet, подписавшись на репу.
+#
+# === Setup перед первым запуском ===
+#
+# 1. Cloudflare:
+#    - Dashboard → R2 Object Storage → Enable R2 (бесплатно, 10GB).
+#    - Скажи Claude — он создаст бакет `kirca-releases`.
+#    - Bucket Settings → Public Access → Enable r2.dev subdomain. Скопируй URL (https://pub-XXXX.r2.dev).
+#    - R2 → Manage R2 API Tokens → Create API Token:
+#         Permissions: Object Read & Write
+#         Specify bucket: kirca-releases
+#      Скопируй Access Key ID и Secret Access Key.
+#
+# 2. Codemagic → App settings → Environment variables → Add group `r2_credentials`:
+#    R2_ACCOUNT_ID         = 940831dcf48b4eb3dfaf44fc48570f59
+#    R2_BUCKET             = kirca-releases
+#    R2_ACCESS_KEY_ID      = <из R2 API Token>
+#    R2_SECRET_ACCESS_KEY  = <из R2 API Token>  (mark as secure)
+#    R2_PUBLIC_BASE        = https://pub-XXXX.r2.dev  (с r2.dev subdomain)
+#
+# 3. Codemagic → App settings → Build configuration → переключи на "codemagic.yaml".
+#
+# 4. Push в main → билд → IPA доступен по $R2_PUBLIC_BASE/kirca.ipa
+#    Тестеры добавляют в Scarlet репу: $R2_PUBLIC_BASE/scarlet-source.json
 
 workflows:
-  ios-testflight:
-    name: iOS TestFlight
+  ios-scarlet:
+    name: iOS unsigned → R2 (Scarlet)
     max_build_duration: 60
     instance_type: mac_mini_m2
     environment:
@@ -23,10 +45,8 @@ workflows:
       cocoapods: default
       vars:
         BUNDLE_ID: "ai.kirca.app"
-        XCODE_WORKSPACE: "Runner.xcworkspace"
-        XCODE_SCHEME: "Runner"
       groups:
-        - app_store_credentials
+        - r2_credentials
 
     triggering:
       events:
@@ -39,15 +59,10 @@ workflows:
     working_directory: flutter_app
 
     scripts:
-      # Скелетон коммитит только lib/ и pubspec.yaml; платформенные папки
-      # генерим на лету. flutter create на существующем проекте не трогает
-      # уже имеющиеся файлы — он только досоздаёт недостающие (ios/, android/).
       - name: Generate platform folders
         script: flutter create --org ai.kirca --platforms=ios,android .
 
-      # flutter create взял имя проекта из pubspec (kirca) и сделал bundle id
-      # ai.kirca.kirca — патчим на ai.kirca.app во всех build-конфигурациях.
-      - name: Patch bundle identifier to ai.kirca.app
+      - name: Patch bundle id to ai.kirca.app
         script: |
           set -e
           PBX=ios/Runner.xcodeproj/project.pbxproj
@@ -57,31 +72,75 @@ workflows:
       - name: Flutter pub get
         script: flutter pub get
 
-      - name: Set up code signing
+      - name: Build unsigned iOS release
         script: |
-          keychain initialize
-          app-store-connect fetch-signing-files "$BUNDLE_ID" \
-            --type IOS_APP_STORE \
-            --create
-          keychain add-certificates
-          xcode-project use-profiles
+          flutter build ios --release --no-codesign \
+            --build-name="1.0.${BUILD_NUMBER}" \
+            --build-number="${BUILD_NUMBER}"
 
-      - name: Increment build number
+      - name: Package IPA
         script: |
-          cd ios
-          agvtool new-version -all $(($BUILD_NUMBER + 1))
+          set -e
+          cd build/ios/iphoneos
+          rm -rf Payload kirca.ipa
+          mkdir Payload
+          cp -R Runner.app Payload/
+          zip -qry ../../../kirca.ipa Payload
+          cd ../../..
+          ls -lh kirca.ipa
 
-      - name: Build IPA
-        script: flutter build ipa --release --export-options-plist=/Users/builder/export_options.plist
+      - name: Generate Scarlet source.json
+        script: |
+          set -e
+          IPA_PATH=kirca.ipa
+          VERSION="1.0.${BUILD_NUMBER}"
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          SIZE=$(stat -f%z "$IPA_PATH")
+          cat > scarlet-source.json <<JSON
+          {
+            "META": {
+              "repoName": "kirca",
+              "repoIcon": "${R2_PUBLIC_BASE}/icon.png"
+            },
+            "Tweaks": [],
+            "Apps": [
+              {
+                "name": "kirca",
+                "version": "${VERSION}",
+                "bundleID": "${BUNDLE_ID}",
+                "down": "${R2_PUBLIC_BASE}/kirca.ipa",
+                "category": "Social Networking",
+                "iconURL": "${R2_PUBLIC_BASE}/icon.png",
+                "description": "Simple chat. Build ${BUILD_NUMBER} (${DATE}). Размер: ${SIZE} байт.",
+                "developer": "skyfet",
+                "screenshots": [],
+                "appstore": false
+              }
+            ]
+          }
+          JSON
+          cat scarlet-source.json
+
+      - name: Upload to R2
+        script: |
+          set -e
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+          export AWS_DEFAULT_REGION=auto
+          aws s3 cp kirca.ipa "s3://${R2_BUCKET}/kirca.ipa" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type application/octet-stream
+          aws s3 cp scarlet-source.json "s3://${R2_BUCKET}/scarlet-source.json" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type application/json \
+            --cache-control "no-cache, max-age=0"
+          echo ""
+          echo "============================================"
+          echo "  IPA:           ${R2_PUBLIC_BASE}/kirca.ipa"
+          echo "  Scarlet repo:  ${R2_PUBLIC_BASE}/scarlet-source.json"
+          echo "============================================"
 
     artifacts:
-      - flutter_app/build/ios/ipa/*.ipa
-      - /tmp/xcodebuild_logs/*.log
-      - flutter_drive.log
-
-    publishing:
-      app_store_connect:
-        auth: integration
-        submit_to_testflight: true
-        beta_groups:
-          - "Internal Testers"
+      - flutter_app/kirca.ipa
+      - flutter_app/scarlet-source.json
