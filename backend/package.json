@@ -1,0 +1,20 @@
+{
+  "name": "kirca-api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create kirca-api",
+    "db:migrate:local": "wrangler d1 migrations apply kirca-api --local",
+    "db:migrate:remote": "wrangler d1 migrations apply kirca-api --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250515.0",
+    "typescript": "^5.6.3",
+    "wrangler": "^3.95.0"
+  },
+  "dependencies": {
+    "hono": "^4.6.14"
+  }
+}
