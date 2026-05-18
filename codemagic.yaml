@@ -1,0 +1,87 @@
+# Codemagic CI/CD for Flutter iOS → TestFlight
+#
+# Файл лежит в корне репы — Codemagic берёт его автоматически.
+#
+# Перед первым запуском в codemagic.io:
+# 1. Подключи репо.
+# 2. Teams → Integrations → App Store Connect: добавь Issuer ID, Key ID, .p8 (имя интеграции — `codemagic`).
+# 3. Environment variables → group `app_store_credentials`:
+#    - APP_STORE_CONNECT_PRIVATE_KEY (содержимое .p8)
+#    - APP_STORE_CONNECT_KEY_IDENTIFIER
+#    - APP_STORE_CONNECT_ISSUER_ID
+# 4. В App Store Connect создай приложение с bundle id `ai.kirca.app`.
+# 5. (Опционально) TestFlight → создай группу "Internal Testers".
+
+workflows:
+  ios-testflight:
+    name: iOS TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      vars:
+        BUNDLE_ID: "ai.kirca.app"
+        XCODE_WORKSPACE: "Runner.xcworkspace"
+        XCODE_SCHEME: "Runner"
+      groups:
+        - app_store_credentials
+
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+      cancel_previous_builds: true
+
+    working_directory: flutter_app
+
+    scripts:
+      # Скелетон коммитит только lib/ и pubspec.yaml; платформенные папки
+      # генерим на лету. flutter create на существующем проекте не трогает
+      # уже имеющиеся файлы — он только досоздаёт недостающие (ios/, android/).
+      - name: Generate platform folders
+        script: flutter create --org ai.kirca --platforms=ios,android .
+
+      # flutter create взял имя проекта из pubspec (kirca) и сделал bundle id
+      # ai.kirca.kirca — патчим на ai.kirca.app во всех build-конфигурациях.
+      - name: Patch bundle identifier to ai.kirca.app
+        script: |
+          set -e
+          PBX=ios/Runner.xcodeproj/project.pbxproj
+          sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = ai\.kirca\.kirca;/PRODUCT_BUNDLE_IDENTIFIER = ai.kirca.app;/g' "$PBX"
+          grep -q "PRODUCT_BUNDLE_IDENTIFIER = ai.kirca.app;" "$PBX"
+
+      - name: Flutter pub get
+        script: flutter pub get
+
+      - name: Set up code signing
+        script: |
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+          keychain add-certificates
+          xcode-project use-profiles
+
+      - name: Increment build number
+        script: |
+          cd ios
+          agvtool new-version -all $(($BUILD_NUMBER + 1))
+
+      - name: Build IPA
+        script: flutter build ipa --release --export-options-plist=/Users/builder/export_options.plist
+
+    artifacts:
+      - flutter_app/build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - flutter_drive.log
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        beta_groups:
+          - "Internal Testers"
