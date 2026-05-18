@@ -1,0 +1,75 @@
+# Codemagic CI/CD for Flutter iOS → TestFlight
+#
+# Перед первым запуском:
+# 1. Подключи репо к Codemagic (codemagic.io).
+# 2. В UI: Teams → Integrations → Apple Developer Portal — добавь Issuer ID, Key ID, .p8.
+# 3. В UI: Code signing identities — добавь iOS distribution certificate и provisioning profile
+#    (или включи automatic code signing).
+# 4. Environment variables (encrypted):
+#    - APP_STORE_CONNECT_PRIVATE_KEY (содержимое .p8)
+#    - APP_STORE_CONNECT_KEY_IDENTIFIER
+#    - APP_STORE_CONNECT_ISSUER_ID
+#    - BUNDLE_ID (например, com.yourname.chatapp)
+
+workflows:
+  ios-testflight:
+    name: iOS TestFlight
+    max_build_duration: 60
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      vars:
+        BUNDLE_ID: "ai.kirca.app"
+        XCODE_WORKSPACE: "Runner.xcworkspace"
+        XCODE_SCHEME: "Runner"
+      groups:
+        - app_store_credentials   # создай группу с APP_STORE_CONNECT_* переменными
+
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+      cancel_previous_builds: true
+
+    working_directory: flutter_app
+
+    scripts:
+      - name: Get Flutter dependencies
+        script: flutter pub get
+
+      - name: Install pods
+        script: |
+          find . -name "Podfile" -execdir pod install \;
+
+      - name: Set up signing
+        script: |
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+          keychain add-certificates
+          xcode-project use-profiles
+
+      - name: Increment build number
+        script: |
+          cd ios
+          agvtool new-version -all $(($BUILD_NUMBER + 1))
+
+      - name: Build IPA
+        script: |
+          flutter build ipa --release \
+            --export-options-plist=/Users/builder/export_options.plist
+
+    artifacts:
+      - flutter_app/build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        beta_groups:
+          - "Internal Testers"   # создай эту группу в App Store Connect → TestFlight
