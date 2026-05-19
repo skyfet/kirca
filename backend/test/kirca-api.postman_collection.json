@@ -272,6 +272,194 @@
           "path": ["rooms", "{{roomId}}", "history"]
         }
       }
+    },
+    {
+      "name": "Create Private Room",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.environment.set('privateRoomName', 'e2e-priv-' + Date.now());"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "const j = pm.response.json();",
+              "pm.test('private flag set', () => pm.expect(j.is_public).to.eql(false));",
+              "pm.environment.set('privateRoomId', j.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"{{privateRoomName}}\",\n  \"is_public\": false\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/rooms",
+          "host": ["{{baseUrl}}"],
+          "path": ["rooms"]
+        }
+      }
+    },
+    {
+      "name": "Register second user (for privacy check)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const suffix = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);",
+              "pm.environment.set('otherUsername', 'e2e_o_' + suffix);",
+              "pm.environment.set('otherPassword', 'pw_' + suffix);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.environment.set('otherToken', pm.response.json().token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"username\": \"{{otherUsername}}\",\n  \"password\": \"{{otherPassword}}\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/register",
+          "host": ["{{baseUrl}}"],
+          "path": ["register"]
+        }
+      }
+    },
+    {
+      "name": "Other user cannot see private room in list",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "const ids = pm.response.json().rooms.map(r => r.id);",
+              "pm.test('private room hidden', () => pm.expect(ids).to.not.include(pm.environment.get('privateRoomId')));",
+              "pm.test('public room visible', () => pm.expect(ids).to.include(pm.environment.get('roomId')));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [{ "key": "token", "value": "{{otherToken}}", "type": "string" }]
+        },
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/rooms",
+          "host": ["{{baseUrl}}"],
+          "path": ["rooms"]
+        }
+      }
+    },
+    {
+      "name": "Other user gets 403 on private history",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 403', () => pm.response.to.have.status(403));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [{ "key": "token", "value": "{{otherToken}}", "type": "string" }]
+        },
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/rooms/{{privateRoomId}}/history",
+          "host": ["{{baseUrl}}"],
+          "path": ["rooms", "{{privateRoomId}}", "history"]
+        }
+      }
+    },
+    {
+      "name": "Other user cannot join private room (403)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 403', () => pm.response.to.have.status(403));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [{ "key": "token", "value": "{{otherToken}}", "type": "string" }]
+        },
+        "method": "POST",
+        "url": {
+          "raw": "{{baseUrl}}/rooms/{{privateRoomId}}/join",
+          "host": ["{{baseUrl}}"],
+          "path": ["rooms", "{{privateRoomId}}", "join"]
+        }
+      }
+    },
+    {
+      "name": "Other user can join public room (200)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [{ "key": "token", "value": "{{otherToken}}", "type": "string" }]
+        },
+        "method": "POST",
+        "url": {
+          "raw": "{{baseUrl}}/rooms/{{roomId}}/join",
+          "host": ["{{baseUrl}}"],
+          "path": ["rooms", "{{roomId}}", "join"]
+        }
+      }
     }
   ]
 }

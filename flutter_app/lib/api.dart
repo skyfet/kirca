@@ -42,21 +42,32 @@ class Api {
     return (_decode(r))['rooms'] as List<dynamic>;
   }
 
-  Future<Map<String, dynamic>> createRoom(String name) async {
+  Future<Map<String, dynamic>> createRoom(String name, {bool isPublic = true}) async {
     final r = await http.post(
       Uri.parse('${Config.apiBase}/rooms'),
       headers: _headers,
-      body: jsonEncode({'name': name}),
+      body: jsonEncode({'name': name, 'is_public': isPublic}),
     );
     return _decode(r);
   }
 
-  Future<List<dynamic>> history(String roomId) async {
-    final r = await http.get(
-      Uri.parse('${Config.apiBase}/rooms/$roomId/history'),
+  Future<List<dynamic>> history(String roomId, {int? after, int? before, int? limit}) async {
+    final qp = <String, String>{};
+    if (after != null) qp['after'] = after.toString();
+    if (before != null) qp['before'] = before.toString();
+    if (limit != null) qp['limit'] = limit.toString();
+    final uri = Uri.parse('${Config.apiBase}/rooms/$roomId/history')
+        .replace(queryParameters: qp.isEmpty ? null : qp);
+    final r = await http.get(uri, headers: _headers);
+    return (_decode(r))['messages'] as List<dynamic>;
+  }
+
+  Future<void> joinRoom(String roomId) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/join'),
       headers: _headers,
     );
-    return (_decode(r))['messages'] as List<dynamic>;
+    _decode(r);
   }
 
   Map<String, dynamic> _decode(http.Response r) {

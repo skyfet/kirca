@@ -35,6 +35,7 @@ workflows:
       vars:
         BUNDLE_ID: "ai.kirca.app"
         GH_REPO: "skyfet/kirca"
+        KIRCA_API_BASE: "https://kirca-api.gdetemka.workers.dev"
 
     triggering:
       events:
@@ -64,7 +65,8 @@ workflows:
         script: |
           flutter build ios --release --no-codesign \
             --build-name="1.0.${BUILD_NUMBER}" \
-            --build-number="${BUILD_NUMBER}"
+            --build-number="${BUILD_NUMBER}" \
+            --dart-define=KIRCA_API_BASE="${KIRCA_API_BASE}"
 
       - name: Package IPA
         script: |
