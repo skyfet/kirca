@@ -9,7 +9,10 @@ kirca/
 ├── backend/           # Cloudflare Worker (TypeScript, Hono) — деплоится как `kirca-api`
 │   ├── src/
 │   │   ├── index.ts   # HTTP API + WS upgrade
-│   │   └── room.ts    # Durable Object (одна на комнату)
+│   │   ├── room.ts    # Durable Object (одна на комнату)
+│   │   ├── openapi.ts # OpenAPI 3.1 спека (источник правды для /docs)
+│   │   ├── home.ts    # HTML главной (/)
+│   │   └── docs.ts    # HTML с Scalar UI (/docs)
 │   ├── migrations/0001_init.sql
 │   ├── wrangler.toml
 │   ├── package.json
@@ -130,6 +133,9 @@ flutter run -d "iPhone 15"
 
 ## 4. Эксплуатация
 
+- `GET /` — минималистичный лендинг со ссылками на доку и репо.
+- `GET /docs` — интерактивный API reference (Scalar UI, читает `/openapi.json`).
+- `GET /openapi.json` — OpenAPI 3.1 спека (источник правды; правится в `backend/src/openapi.ts`).
 - `GET /healthz` — публичный health-check для UptimeRobot/cron. Возвращает `{ok:true, t}`.
 - **Logout:** `POST /logout` с Bearer-токеном — удаляет конкретно эту сессию. Клиент чистит локал.
 - **Смена пароля:** `POST /change-password {old_password, new_password}` — обновляет хеш и **отзывает все остальные сессии** этого юзера.
