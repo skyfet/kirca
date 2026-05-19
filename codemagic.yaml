@@ -1,26 +1,26 @@
 # Codemagic CI/CD — Flutter iOS → unsigned IPA → GitHub Releases → Scarlet
 #
-# Что делает:
-# 1. Генерит ios/android папки (не коммитим)
-# 2. Патчит bundle id на ai.kirca.app
-# 3. Собирает release IPA БЕЗ подписи (--no-codesign)
-# 4. Пакует в IPA
-# 5. Генерит Scarlet source.json
-# 6. Codemagic создаёт GitHub Release с тэгом build-N, прикладывает оба файла
+# What it does:
+# 1. Generates ios/android folders (not committed)
+# 2. Patches bundle id to ai.kirca.app
+# 3. Builds release IPA WITHOUT signing (--no-codesign)
+# 4. Packages it as IPA
+# 5. Generates Scarlet source.json
+# 6. Codemagic creates a GitHub Release tagged build-N with both files attached
 #
-# Никакого Apple Developer / App Store Connect не нужно.
-# Тестеры ставят через Scarlet, подписавшись на репу.
+# No Apple Developer / App Store Connect required.
+# Testers install via Scarlet by subscribing to the repo source.
 #
-# === Setup перед первым запуском ===
+# === Setup before the first run ===
 #
-# 1. Codemagic → App settings → Build configuration → переключи на "codemagic.yaml".
+# 1. Codemagic → App settings → Build configuration → switch to "codemagic.yaml".
 #
-# 2. Codemagic → User settings → Integrations → GitHub: должен быть подключён
-#    (обычно подключается автоматом при connect repo через OAuth).
-#    Если нет — добавь PAT с правом `repo` как env var GITHUB_TOKEN.
+# 2. Codemagic → User settings → Integrations → GitHub: must be connected
+#    (usually connected automatically when the repo is added via OAuth).
+#    If not, add a PAT with `repo` scope as env var GITHUB_TOKEN.
 #
-# 3. Push в main → билд → новый release `build-N` на github.com/skyfet/kirca/releases
-#    Тестеры добавляют в Scarlet репу:
+# 3. Push to main → build → new release `build-N` at github.com/skyfet/kirca/releases
+#    Testers add the Scarlet source:
 #       https://github.com/skyfet/kirca/releases/latest/download/scarlet-source.json
 
 workflows:
@@ -61,17 +61,17 @@ workflows:
       - name: Apply iOS patches (AppDelegate + entitlements)
         script: |
           set -e
-          # AppDelegate.swift регистрирует kirca/apns MethodChannel и обрабатывает APNs callbacks.
+          # AppDelegate.swift registers the kirca/apns MethodChannel and handles APNs callbacks.
           cp ios_patches/AppDelegate.swift ios/Runner/AppDelegate.swift
-          # Entitlements: aps-environment=production. Scarlet/non-Apple-Dev может не уметь
-          # настоящие push — это известный риск, фолбэк описан в DEPLOY.md.
+          # Entitlements: aps-environment=production. Scarlet / non-Apple-Dev may not deliver
+          # real push reliably — known risk, fallback documented in DEPLOY.md.
           cp ios_patches/Runner.entitlements ios/Runner/Runner.entitlements
-          # Регистрируем entitlements в Xcode-проекте (если ещё не привязаны).
+          # Wire entitlements into the Xcode project if not already attached.
           PBX=ios/Runner.xcodeproj/project.pbxproj
           if ! grep -q 'CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements' "$PBX"; then
-            # Добавляем строку CODE_SIGN_ENTITLEMENTS в каждую buildSettings секцию Runner-таргета.
-            sed -i '' 's|PRODUCT_BUNDLE_IDENTIFIER = ai.kirca.app;|PRODUCT_BUNDLE_IDENTIFIER = ai.kirca.app;\
-				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;|g' "$PBX"
+            # Inject CODE_SIGN_ENTITLEMENTS after each PRODUCT_BUNDLE_IDENTIFIER line in the Runner target.
+            # perl handles \n and \t escapes portably, so we avoid embedding literal tabs in this YAML.
+            perl -i -pe 's|(PRODUCT_BUNDLE_IDENTIFIER = ai\.kirca\.app;)|$1\n\t\t\t\tCODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;|g' "$PBX"
           fi
 
       - name: Flutter pub get

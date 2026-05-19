@@ -3,8 +3,8 @@ main = "src/index.ts"
 compatibility_date = "2025-11-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Не-секретные APNs-параметры. Секрет (APNS_KEY) кладётся через `wrangler secret put APNS_KEY`.
-# Если значения пусты — push-уведомления тихо отключены.
+# Non-secret APNs config. The secret (APNS_KEY) is set via `wrangler secret put APNS_KEY`.
+# If these values are empty, push notifications are silently disabled.
 [vars]
 APNS_TEAM_ID = ""
 APNS_KEY_ID = ""
@@ -25,8 +25,8 @@ tag = "v1"
 new_sqlite_classes = ["Room"]
 
 # ---------------- staging ----------------
-# Отдельный воркер для рискованных изменений. Деплоится workflow-ом backend-staging.yml на push в ветку `dev`.
-# Перед первым деплоем: `wrangler d1 create kirca-api-staging` и подставить database_id ниже.
+# Separate worker for risky changes. Deployed by backend-staging.yml on push to the `dev` branch.
+# Before the first deploy: run `wrangler d1 create kirca-api-staging` and paste the database_id below.
 [env.staging]
 name = "kirca-api-staging"
 
