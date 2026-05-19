@@ -153,6 +153,95 @@
       }
     },
     {
+      "name": "Login missing password -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));",
+              "pm.test('error mentions required', () => pm.expect(pm.response.json().error).to.match(/required/i));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"username\": \"{{username}}\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/login",
+          "host": ["{{baseUrl}}"],
+          "path": ["login"]
+        }
+      }
+    },
+    {
+      "name": "Register missing fields -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"username\": \"only_username\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/register",
+          "host": ["{{baseUrl}}"],
+          "path": ["register"]
+        }
+      }
+    },
+    {
+      "name": "Register short password -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));",
+              "pm.test('error mentions password', () => pm.expect(pm.response.json().error).to.match(/password/i));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"username\": \"e2e_short_{{$timestamp}}\",\n  \"password\": \"abc\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/register",
+          "host": ["{{baseUrl}}"],
+          "path": ["register"]
+        }
+      }
+    },
+    {
       "name": "GET /rooms without token -> 401",
       "event": [
         {
@@ -167,6 +256,32 @@
       ],
       "request": {
         "auth": { "type": "noauth" },
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/rooms",
+          "host": ["{{baseUrl}}"],
+          "path": ["rooms"]
+        }
+      }
+    },
+    {
+      "name": "GET /rooms with garbage bearer -> 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 401', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [{ "key": "token", "value": "not-a-real-token-deadbeef", "type": "string" }]
+        },
         "method": "GET",
         "url": {
           "raw": "{{baseUrl}}/rooms",
@@ -209,6 +324,35 @@
         "body": {
           "mode": "raw",
           "raw": "{\n  \"name\": \"{{roomName}}\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/rooms",
+          "host": ["{{baseUrl}}"],
+          "path": ["rooms"]
+        }
+      }
+    },
+    {
+      "name": "Create Room empty name -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));",
+              "pm.test('error mentions name', () => pm.expect(pm.response.json().error).to.match(/name/i));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"   \"\n}",
           "options": { "raw": { "language": "json" } }
         },
         "url": {
@@ -270,6 +414,78 @@
           "raw": "{{baseUrl}}/rooms/{{roomId}}/history",
           "host": ["{{baseUrl}}"],
           "path": ["rooms", "{{roomId}}", "history"]
+        }
+      }
+    },
+    {
+      "name": "Get Room History with limit param",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "const j = pm.response.json();",
+              "pm.test('messages array honors limit', () => {",
+              "  pm.expect(j.messages).to.be.an('array');",
+              "  pm.expect(j.messages.length).to.be.at.most(5);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/rooms/{{roomId}}/history?limit=5",
+          "host": ["{{baseUrl}}"],
+          "path": ["rooms", "{{roomId}}", "history"],
+          "query": [{ "key": "limit", "value": "5" }]
+        }
+      }
+    },
+    {
+      "name": "Join nonexistent room -> 404",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 404', () => pm.response.to.have.status(404));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "url": {
+          "raw": "{{baseUrl}}/rooms/00000000-0000-0000-0000-000000000000/join",
+          "host": ["{{baseUrl}}"],
+          "path": ["rooms", "00000000-0000-0000-0000-000000000000", "join"]
+        }
+      }
+    },
+    {
+      "name": "History of nonexistent room -> 403",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 403', () => pm.response.to.have.status(403));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/rooms/00000000-0000-0000-0000-000000000000/history",
+          "host": ["{{baseUrl}}"],
+          "path": ["rooms", "00000000-0000-0000-0000-000000000000", "history"]
         }
       }
     },
@@ -462,6 +678,201 @@
       }
     },
     {
+      "name": "Idempotent join public room (200)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [{ "key": "token", "value": "{{otherToken}}", "type": "string" }]
+        },
+        "method": "POST",
+        "url": {
+          "raw": "{{baseUrl}}/rooms/{{roomId}}/join",
+          "host": ["{{baseUrl}}"],
+          "path": ["rooms", "{{roomId}}", "join"]
+        }
+      }
+    },
+    {
+      "name": "Register device (ios)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.environment.set('deviceToken', 'e2e_dev_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.test('ok=true', () => pm.expect(pm.response.json().ok).to.eql(true));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"{{deviceToken}}\",\n  \"platform\": \"ios\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/devices",
+          "host": ["{{baseUrl}}"],
+          "path": ["devices"]
+        }
+      }
+    },
+    {
+      "name": "Register device without auth -> 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 401', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"x\",\n  \"platform\": \"ios\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/devices",
+          "host": ["{{baseUrl}}"],
+          "path": ["devices"]
+        }
+      }
+    },
+    {
+      "name": "Register device missing platform -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"some-token\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/devices",
+          "host": ["{{baseUrl}}"],
+          "path": ["devices"]
+        }
+      }
+    },
+    {
+      "name": "Register device unsupported platform -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));",
+              "pm.test('error mentions platform', () => pm.expect(pm.response.json().error).to.match(/platform/i));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"some-token\",\n  \"platform\": \"windows\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/devices",
+          "host": ["{{baseUrl}}"],
+          "path": ["devices"]
+        }
+      }
+    },
+    {
+      "name": "Unregister device (204)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 204', () => pm.response.to.have.status(204));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "url": {
+          "raw": "{{baseUrl}}/devices/{{deviceToken}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["devices", "{{deviceToken}}"]
+        }
+      }
+    },
+    {
+      "name": "WS endpoint without Upgrade header -> 426",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 426', () => pm.response.to.have.status(426));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/rooms/{{roomId}}/ws",
+          "host": ["{{baseUrl}}"],
+          "path": ["rooms", "{{roomId}}", "ws"]
+        }
+      }
+    },
+    {
       "name": "Healthz (no auth)",
       "event": [
         {
@@ -484,6 +895,35 @@
           "raw": "{{baseUrl}}/healthz",
           "host": ["{{baseUrl}}"],
           "path": ["healthz"]
+        }
+      }
+    },
+    {
+      "name": "Change password short new -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));",
+              "pm.test('error mentions password', () => pm.expect(pm.response.json().error).to.match(/password/i));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"old_password\": \"{{password}}\",\n  \"new_password\": \"abc\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/change-password",
+          "host": ["{{baseUrl}}"],
+          "path": ["change-password"]
         }
       }
     },
