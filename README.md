@@ -2,7 +2,7 @@
 
 Простой чат: Cloudflare Worker + Durable Objects + D1 для бэкенда, Flutter — для iOS-клиента.
 
-См. также `DEPLOY.md` (CI/CD) и `ROADMAP.md` (что улучшать дальше).
+См. также `LAUNCH.md` (пошаговый чек-лист публичного запуска), `DEPLOY.md` (CI/CD) и `ROADMAP.md` (что улучшать дальше).
 
 ```
 kirca/
