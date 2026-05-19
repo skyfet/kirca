@@ -10,6 +10,7 @@ import 'package:web_socket_channel/status.dart' as ws_status;
 import '../api.dart';
 import '../config.dart';
 import '../state.dart';
+import '../storage/outbox.dart';
 
 enum _Status { sending, sent }
 
@@ -79,7 +80,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Future<void> _init() async {
-    final auth = ref.read(authProvider)!;
+    // Восстанавливаем неподтверждённые сообщения с прошлой сессии.
+    try {
+      final saved = await Outbox.byRoom(widget.roomId);
+      final auth = ref.read(authProvider);
+      for (final s in saved) {
+        final m = _Msg(
+          clientId: s.clientId,
+          userId: auth?.userId ?? '',
+          username: auth?.username ?? '',
+          text: s.text,
+          createdAt: s.createdAt,
+          status: _Status.sending,
+        );
+        _messages.add(m);
+        _pending[s.clientId] = m;
+      }
+      if (saved.isNotEmpty && mounted) setState(() {});
+    } catch (_) {}
+
+    final auth = ref.read(authProvider);
+    if (auth == null) return;
     try {
       final h = await Api(token: auth.token).history(widget.roomId);
       if (_disposed) return;
@@ -106,7 +127,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         if (!_connected && mounted) setState(() => _connected = true);
         try {
           final m = jsonDecode(raw as String) as Map<String, dynamic>;
-          if (m['type'] == 'msg') _ingestServerMessage(m);
+          final type = m['type'];
+          if (type == 'msg') {
+            _ingestServerMessage(m);
+          } else if (type == 'error') {
+            final code = m['code']?.toString();
+            if (code == 'rate_limited' && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Слишком много сообщений, подожди немного')),
+              );
+            }
+          }
         } catch (_) {}
       },
       onDone: _onDisconnect,
@@ -134,11 +165,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   void _onDisconnect() {
     if (_disposed) return;
+    // Если сервер закрыл WS с 1008 — токен невалиден. Уходим на логин.
+    final code = _ws?.closeCode;
     _sub?.cancel();
     _sub = null;
     try { _ws?.sink.close(); } catch (_) {}
     _ws = null;
     if (mounted) setState(() => _connected = false);
+
+    if (code == 1008) {
+      ref.read(authProvider.notifier).forceLogout();
+      return;
+    }
 
     const delays = [1, 2, 4, 8, 16, 30];
     final secs = delays[min(_attempt, delays.length - 1)];
@@ -160,6 +198,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       p.createdAt = createdAt;
       p.status = _Status.sent;
       _lastSeenAt = max(_lastSeenAt, createdAt);
+      // Сообщение подтверждено сервером — удаляем из локального outbox.
+      Outbox.remove(clientId);
       if (mounted) setState(() {});
       if (scroll) _scrollToEnd();
       return;
@@ -208,12 +248,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (auth == null) return;
 
     final clientId = _uuidV4();
+    final createdAt = DateTime.now().millisecondsSinceEpoch;
     final msg = _Msg(
       clientId: clientId,
       userId: auth.userId,
       username: auth.username,
       text: t,
-      createdAt: DateTime.now().millisecondsSinceEpoch,
+      createdAt: createdAt,
       status: _Status.sending,
     );
     _messages.add(msg);
@@ -222,6 +263,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     setState(() {});
     _scrollToEnd();
 
+    // Сначала persist, потом отправляем.
+    // Если приложение упадёт между этими шагами — restart переотправит.
+    Outbox.add(
+      clientId: clientId,
+      roomId: widget.roomId,
+      text: t,
+      createdAt: createdAt,
+    );
     _trySend(msg);
   }
 

@@ -30,10 +30,8 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
       final list = await Api(token: auth.token).rooms();
       setState(() { _rooms = list; _loading = false; });
     } on ApiException catch (e) {
-      if (e.status == 401) {
-        await ref.read(authProvider.notifier).clear();
-        return;
-      }
+      // 401 уже обработан глобальным хуком в Api — нас выкинет на логин.
+      if (e.status == 401) return;
       setState(() { _err = e.message; _loading = false; });
     } catch (_) {
       setState(() { _err = 'Не удалось подключиться'; _loading = false; });
@@ -87,7 +85,7 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
           IconButton(
             tooltip: 'Выйти',
             icon: const Icon(Icons.logout),
-            onPressed: () => ref.read(authProvider.notifier).clear(),
+            onPressed: () => ref.read(authProvider.notifier).logout(),
           ),
         ],
       ),

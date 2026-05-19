@@ -58,6 +58,22 @@ workflows:
           sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = ai\.kirca\.kirca;/PRODUCT_BUNDLE_IDENTIFIER = ai.kirca.app;/g' "$PBX"
           grep -q "PRODUCT_BUNDLE_IDENTIFIER = ai.kirca.app;" "$PBX"
 
+      - name: Apply iOS patches (AppDelegate + entitlements)
+        script: |
+          set -e
+          # AppDelegate.swift регистрирует kirca/apns MethodChannel и обрабатывает APNs callbacks.
+          cp ios_patches/AppDelegate.swift ios/Runner/AppDelegate.swift
+          # Entitlements: aps-environment=production. Scarlet/non-Apple-Dev может не уметь
+          # настоящие push — это известный риск, фолбэк описан в DEPLOY.md.
+          cp ios_patches/Runner.entitlements ios/Runner/Runner.entitlements
+          # Регистрируем entitlements в Xcode-проекте (если ещё не привязаны).
+          PBX=ios/Runner.xcodeproj/project.pbxproj
+          if ! grep -q 'CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements' "$PBX"; then
+            # Добавляем строку CODE_SIGN_ENTITLEMENTS в каждую buildSettings секцию Runner-таргета.
+            sed -i '' 's|PRODUCT_BUNDLE_IDENTIFIER = ai.kirca.app;|PRODUCT_BUNDLE_IDENTIFIER = ai.kirca.app;\
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;|g' "$PBX"
+          fi
+
       - name: Flutter pub get
         script: flutter pub get
 

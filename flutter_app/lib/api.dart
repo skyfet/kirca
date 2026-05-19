@@ -10,6 +10,14 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
+/// Колбэк глобальной разлогинки. Устанавливается из state.dart один раз на запуск.
+/// Когда сервер отвечает 401 — Api дёрнет его, чтобы стек экранов вернулся на логин.
+typedef ForceLogout = Future<void> Function();
+ForceLogout? _onUnauthorized;
+void registerUnauthorizedHandler(ForceLogout fn) {
+  _onUnauthorized = fn;
+}
+
 class Api {
   final String? token;
   Api({this.token});
@@ -35,6 +43,23 @@ class Api {
       body: jsonEncode({'username': username, 'password': password}),
     );
     return _decode(r);
+  }
+
+  Future<void> logout() async {
+    final r = await http.post(Uri.parse('${Config.apiBase}/logout'), headers: _headers);
+    // 204 — ок; 401 — токен уже мёртв, тоже считаем успехом.
+    if (r.statusCode != 204 && r.statusCode != 401) {
+      _decode(r);
+    }
+  }
+
+  Future<void> changePassword(String oldPassword, String newPassword) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/change-password'),
+      headers: _headers,
+      body: jsonEncode({'old_password': oldPassword, 'new_password': newPassword}),
+    );
+    _decode(r);
   }
 
   Future<List<dynamic>> rooms() async {
@@ -70,12 +95,33 @@ class Api {
     _decode(r);
   }
 
+  Future<void> registerDevice(String deviceToken, String platform) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/devices'),
+      headers: _headers,
+      body: jsonEncode({'token': deviceToken, 'platform': platform}),
+    );
+    _decode(r);
+  }
+
+  Future<void> unregisterDevice(String deviceToken) async {
+    final r = await http.delete(
+      Uri.parse('${Config.apiBase}/devices/$deviceToken'),
+      headers: _headers,
+    );
+    if (r.statusCode != 204) _decode(r);
+  }
+
   Map<String, dynamic> _decode(http.Response r) {
     Map<String, dynamic> body;
     try {
       body = jsonDecode(r.body) as Map<String, dynamic>;
     } catch (_) {
       body = {'error': 'bad response'};
+    }
+    if (r.statusCode == 401 && _onUnauthorized != null) {
+      // не ждём — пусть отработает в фоне; экраны уже получат исключение и выйдут.
+      _onUnauthorized!();
     }
     if (r.statusCode >= 400) {
       throw ApiException(body['error']?.toString() ?? 'error', r.statusCode);

@@ -5,15 +5,20 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
     "db:create": "wrangler d1 create kirca-api",
     "db:migrate:local": "wrangler d1 migrations apply kirca-api --local",
     "db:migrate:remote": "wrangler d1 migrations apply kirca-api --remote",
+    "db:migrate:staging": "wrangler d1 migrations apply kirca-api-staging --remote --env staging",
+    "test": "vitest run",
     "test:e2e": "newman run test/kirca-api.postman_collection.json -e test/kirca-api.postman_environment.json --reporters cli"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.5.40",
     "@cloudflare/workers-types": "^4.20250515.0",
     "newman": "^6.2.1",
     "typescript": "^5.6.3",
+    "vitest": "2.1.9",
     "wrangler": "^3.95.0"
   },
   "dependencies": {

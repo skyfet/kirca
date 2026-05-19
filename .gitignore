@@ -1,3 +1,13 @@
+# Secrets / local env
+.dev.vars
+backend/.dev.vars
+backend/.env*
+.env
+.env.*
+
+# Node
+node_modules/
+
 # Miscellaneous
 *.class
 *.lock

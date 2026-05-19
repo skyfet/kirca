@@ -1,6 +1,15 @@
 name = "kirca-api"
 main = "src/index.ts"
 compatibility_date = "2025-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Не-секретные APNs-параметры. Секрет (APNS_KEY) кладётся через `wrangler secret put APNS_KEY`.
+# Если значения пусты — push-уведомления тихо отключены.
+[vars]
+APNS_TEAM_ID = ""
+APNS_KEY_ID = ""
+APNS_BUNDLE_ID = "ai.kirca.app"
+APNS_HOST = "api.push.apple.com"
 
 [[d1_databases]]
 binding = "DB"
@@ -12,5 +21,30 @@ name = "ROOM"
 class_name = "Room"
 
 [[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+# ---------------- staging ----------------
+# Отдельный воркер для рискованных изменений. Деплоится workflow-ом backend-staging.yml на push в ветку `dev`.
+# Перед первым деплоем: `wrangler d1 create kirca-api-staging` и подставить database_id ниже.
+[env.staging]
+name = "kirca-api-staging"
+
+[env.staging.vars]
+APNS_TEAM_ID = ""
+APNS_KEY_ID = ""
+APNS_BUNDLE_ID = "ai.kirca.app"
+APNS_HOST = "api.sandbox.push.apple.com"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "kirca-api-staging"
+database_id = "REPLACE_ME"
+
+[[env.staging.durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"
+
+[[env.staging.migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]

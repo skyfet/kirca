@@ -128,16 +128,26 @@ flutter run -d "iPhone 15"
 
 **Комнаты:** при создании указывается `is_public`. Публичные видны всем, в приватные пускают только участников (`memberships`). Создатель автоматически становится owner. В публичную можно вступить через `POST /rooms/:id/join`.
 
-## 4. Что ещё стоит сделать (TODO)
+## 4. Эксплуатация
+
+- `GET /healthz` — публичный health-check для UptimeRobot/cron. Возвращает `{ok:true, t}`.
+- **Logout:** `POST /logout` с Bearer-токеном — удаляет конкретно эту сессию. Клиент чистит локал.
+- **Смена пароля:** `POST /change-password {old_password, new_password}` — обновляет хеш и **отзывает все остальные сессии** этого юзера.
+- **Rate limiting:** регистрация/логин лимитятся per-IP (`CF-Connecting-IP`), fixed-window 1 час. WS-отправка лимитится per-user в DO (10 сообщений / 5 сек).
+- **Push (APNs).** Бэкенд шлёт нативно через Web Crypto. Настройка ключей — см. `DEPLOY.md` → APNs.
+- **Staging:** отдельный воркер `kirca-api-staging` из ветки `dev`. Подробности в `DEPLOY.md`.
+
+## 5. Что ещё стоит сделать (TODO)
 
 Дальнейшие улучшения — см. [`ROADMAP.md`](./ROADMAP.md). Кратко то, что ближе всего:
-- **Push (APNs).** OneSignal/Knock + хук в DO «получатель оффлайн → дёрни сервис».
-- **Rate limiting.** На `/register`, `/login` через Cloudflare Rules; на отправку — счётчик в DO.
 - **Typing indicators / read receipts.** Отдельные типы сообщений по WS, без записи в D1.
-- **Пагинация назад по истории.** Используй `GET /rooms/:id/history?before=<ts>&limit=50`.
+- **Edit/delete messages, delete account.**
+- **Attachments.** Картинки/файлы через R2.
+- **Бесконечный скролл назад в UI.** Бэкенд уже умеет `?before=`.
 - **JWT вместо сессий в D1.** Уберёт лишний select на каждом запросе (опционально — текущая нагрузка терпит).
+- **E2E-шифрование.** Серьёзная переделка (X3DH/Sender Keys); отложено.
 
-## 5. Лимиты Cloudflare (актуально на момент написания)
+## 6. Лимиты Cloudflare (актуально на момент написания)
 
 - **Workers Free:** 100k запросов в день, 10 мс CPU/запрос.
 - **Durable Objects:** требуют Workers Paid ($5/мес минимум).
