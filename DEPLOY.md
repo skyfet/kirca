@@ -21,10 +21,59 @@ Workflow в `.github/workflows/backend.yml` срабатывает на push в 
 ### Что произойдёт на push
 
 ```
-push → checkout → npm ci → tsc --noEmit → wrangler d1 migrations apply → wrangler deploy
+push → checkout → npm ci → tsc --noEmit → npm test → wrangler d1 migrations apply → wrangler deploy → newman e2e
 ```
 
+`npm test` гонит юнит-тесты (vitest-pool-workers поднимает воркер в miniflare). Падают — деплой отменяется.
 Если `tsc` падает — деплой не пройдёт. Если миграция конфликтует — увидишь в логах GH.
+
+### Staging
+
+Отдельный воркер `kirca-api-staging` деплоится из ветки `dev` (workflow `backend-staging.yml`).
+Перед первым запуском нужно один раз руками:
+
+```bash
+cd backend
+npx wrangler d1 create kirca-api-staging
+# Вставь полученный database_id в [[env.staging.d1_databases]] в wrangler.toml.
+npm run db:migrate:staging
+npm run deploy:staging
+```
+
+После этого push в `dev` будет автоматически выкатывать staging.
+
+Flutter-билд для staging — отдельным dart-define:
+
+```bash
+flutter build ios --release --no-codesign \
+  --dart-define=KIRCA_API_BASE=https://kirca-api-staging.<acc>.workers.dev
+```
+
+### Push (APNs)
+
+Бэкенд шлёт APNs напрямую через Web Crypto. Никакого Firebase не нужно.
+
+Один раз настроить:
+
+1. **Apple Developer Portal → Keys → +**. Создай ключ с `Apple Push Notifications service (APNs)`. Скачай `.p8`.
+2. Запомни `Key ID` (10 символов) и `Team ID` (10 символов из правого верхнего угла портала).
+3. В `backend/wrangler.toml` `[vars]` подставь:
+   ```toml
+   APNS_TEAM_ID = "..."
+   APNS_KEY_ID  = "..."
+   APNS_BUNDLE_ID = "ai.kirca.app"
+   ```
+4. Положи `.p8` как секрет:
+   ```bash
+   cat AuthKey_XXXX.p8 | npx wrangler secret put APNS_KEY
+   # для staging:
+   cat AuthKey_XXXX.p8 | npx wrangler secret put APNS_KEY --env staging
+   ```
+5. Передеплой воркер. С этого момента сообщения в комнате триггерят push offline-юзерам.
+
+Если значения пустые — воркер тихо пропускает push (никаких 500), удобно для локалки.
+
+⚠️ **Scarlet и APNs.** IPA, подписанный Scarlet, использует свой профиль (не Apple Dev). Push **может не работать** — это известный риск. Если упрётся: бэкенд продолжит работать без пушей; в `wrangler.toml` можно переключить `APNS_HOST` на `api.sandbox.push.apple.com` и попробовать. Гарантия push'а — настоящий Apple Developer-аккаунт.
 
 ## Flutter (iOS) — Codemagic → unsigned IPA → GitHub Releases → Scarlet
 

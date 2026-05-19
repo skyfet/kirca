@@ -30,10 +30,8 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
       final list = await Api(token: auth.token).rooms();
       setState(() { _rooms = list; _loading = false; });
     } on ApiException catch (e) {
-      if (e.status == 401) {
-        await ref.read(authProvider.notifier).clear();
-        return;
-      }
+      // 401 уже обработан глобальным хуком в Api — нас выкинет на логин.
+      if (e.status == 401) return;
       setState(() { _err = e.message; _loading = false; });
     } catch (_) {
       setState(() { _err = 'Не удалось подключиться'; _loading = false; });
@@ -42,20 +40,36 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
 
   Future<void> _newRoom() async {
     final ctrl = TextEditingController();
+    bool isPublic = true;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Новая комната'),
-        content: TextField(controller: ctrl, autofocus: true),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Отмена')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Создать')),
-        ],
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('Новая комната'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: ctrl, autofocus: true, decoration: const InputDecoration(hintText: 'Название')),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Публичная'),
+                subtitle: const Text('Видна всем; в приватную пускают только участников'),
+                value: isPublic,
+                onChanged: (v) => setLocal(() => isPublic = v),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Создать')),
+          ],
+        ),
       ),
     );
     if (ok == true && ctrl.text.trim().isNotEmpty) {
       try {
-        await Api(token: ref.read(authProvider)!.token).createRoom(ctrl.text.trim());
+        await Api(token: ref.read(authProvider)!.token)
+            .createRoom(ctrl.text.trim(), isPublic: isPublic);
         _load();
       } catch (_) {}
     }
@@ -71,7 +85,7 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
           IconButton(
             tooltip: 'Выйти',
             icon: const Icon(Icons.logout),
-            onPressed: () => ref.read(authProvider.notifier).clear(),
+            onPressed: () => ref.read(authProvider.notifier).logout(),
           ),
         ],
       ),
@@ -99,8 +113,10 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
                         separatorBuilder: (_, __) => const Divider(height: 1),
                         itemBuilder: (_, i) {
                           final r = _rooms[i] as Map<String, dynamic>;
+                          final isPublic = (r['is_public'] as num?)?.toInt() == 1
+                              || r['is_public'] == true;
                           return ListTile(
-                            leading: const Icon(Icons.chat_bubble_outline),
+                            leading: Icon(isPublic ? Icons.public : Icons.lock_outline),
                             title: Text(r['name']?.toString() ?? ''),
                             onTap: () => Navigator.push(
                               context,
