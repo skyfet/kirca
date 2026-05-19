@@ -25,13 +25,13 @@ jobs:
 
       - run: npm ci
 
-      # Тип-чек: проверим, что код вообще валиден перед деплоем
+      # Type-check: make sure the code is even valid before we deploy.
       - run: npx tsc --noEmit
 
-      # Юнит-тесты (vitest-pool-workers). Падают — деплой отменяется.
+      # Unit tests (vitest-pool-workers). Failure here aborts the deploy.
       - run: npm test
 
-      # Применяем миграции к remote D1 (идемпотентно — wrangler сам отслеживает применённые)
+      # Apply migrations to remote D1 (idempotent — wrangler tracks what's already applied).
       - name: Apply D1 migrations
         run: npx wrangler d1 migrations apply kirca-api --remote
         env:
