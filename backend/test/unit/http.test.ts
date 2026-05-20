@@ -26,6 +26,55 @@ describe("HTTP endpoints", () => {
     expect(b.ok).toBe(true);
   });
 
+  it("/ отдаёт минималистичный HTML с ссылкой на /docs", async () => {
+    const r = await SELF.fetch("http://x/");
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toMatch(/text\/html/);
+    const body = await r.text();
+    expect(body).toContain("kirca");
+    expect(body).toContain('href="/docs"');
+    expect(body).toContain('href="/openapi.json"');
+  });
+
+  it("/docs отдаёт Scalar HTML, который тянет /openapi.json", async () => {
+    const r = await SELF.fetch("http://x/docs");
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toMatch(/text\/html/);
+    const body = await r.text();
+    expect(body).toContain('data-url="/openapi.json"');
+    expect(body).toContain("@scalar/api-reference");
+  });
+
+  it("/openapi.json — валидный OpenAPI 3.1 с описанными ручками", async () => {
+    const r = await SELF.fetch("http://x/openapi.json");
+    expect(r.status).toBe(200);
+    const spec = (await j(r)) as {
+      openapi: string;
+      info: { title: string };
+      paths: Record<string, unknown>;
+    };
+    expect(spec.openapi).toBe("3.1.0");
+    expect(spec.info.title).toBe("kirca API");
+    for (const p of [
+      "/",
+      "/healthz",
+      "/register",
+      "/login",
+      "/logout",
+      "/change-password",
+      "/devices",
+      "/devices/{token}",
+      "/rooms",
+      "/rooms/{id}/join",
+      "/rooms/{id}/history",
+      "/rooms/{id}/ws",
+      "/docs",
+      "/openapi.json",
+    ]) {
+      expect(spec.paths[p], `missing path ${p}`).toBeTruthy();
+    }
+  });
+
   it("register/login дают токен, /rooms доступен", async () => {
     const r = await SELF.fetch("http://x/register", {
       method: "POST",

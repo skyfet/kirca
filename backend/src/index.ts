@@ -4,6 +4,9 @@ import { hashPassword, verifyPassword, SESSION_TTL_MS } from "./lib/auth";
 import { checkRateLimit, clientIp } from "./lib/rate_limit";
 import { logError, logInfo, newRid } from "./lib/log";
 import type { ApnsEnv } from "./lib/apns";
+import { homeHtml } from "./home";
+import { docsHtml } from "./docs";
+import { openapiSpec } from "./openapi";
 
 export { Room } from "./room";
 
@@ -95,6 +98,21 @@ async function createSession(env: Env, userId: string): Promise<{ token: string;
 const RL_REG_LIMIT = 10;
 const RL_LOGIN_LIMIT = 20;
 const RL_WINDOW_MS = 60 * 60 * 1000;
+
+// ---------- meta (home + docs) ----------
+app.get("/", (c) =>
+  c.html(homeHtml, 200, {
+    "Cache-Control": "public, max-age=300",
+  }),
+);
+
+app.get("/docs", (c) =>
+  c.html(docsHtml, 200, {
+    "Cache-Control": "public, max-age=300",
+  }),
+);
+
+app.get("/openapi.json", (c) => c.json(openapiSpec));
 
 // ---------- health ----------
 app.get("/healthz", (c) => c.json({ ok: true, t: Date.now() }));
