@@ -1,31 +1,27 @@
-# Codemagic CI/CD — Flutter iOS → unsigned IPA → GitHub Releases → Scarlet
+# Codemagic CI/CD - Flutter iOS - unsigned IPA - GitHub Releases
 #
 # What it does:
 # 1. Generates ios/android folders (not committed)
 # 2. Patches bundle id to ai.kirca.app
 # 3. Builds release IPA WITHOUT signing (--no-codesign)
 # 4. Packages it as IPA
-# 5. Generates Scarlet source.json
-# 6. Codemagic creates a GitHub Release tagged build-N with both files attached
+# 5. Codemagic creates a GitHub Release tagged build-N with the IPA attached
 #
 # No Apple Developer / App Store Connect required.
-# Testers install via Scarlet by subscribing to the repo source.
 #
 # === Setup before the first run ===
 #
-# 1. Codemagic → App settings → Build configuration → switch to "codemagic.yaml".
+# 1. Codemagic - App settings - Build configuration - switch to "codemagic.yaml".
 #
-# 2. Codemagic → User settings → Integrations → GitHub: must be connected
+# 2. Codemagic - User settings - Integrations - GitHub: must be connected
 #    (usually connected automatically when the repo is added via OAuth).
 #    If not, add a PAT with `repo` scope as env var GITHUB_TOKEN.
 #
-# 3. Push to main → build → new release `build-N` at github.com/skyfet/kirca/releases
-#    Testers add the Scarlet source:
-#       https://github.com/skyfet/kirca/releases/latest/download/scarlet-source.json
+# 3. Push to main - build - new release `build-N` at github.com/skyfet/kirca/releases.
 
 workflows:
-  ios-scarlet:
-    name: iOS unsigned → GH Releases (Scarlet)
+  ios-unsigned:
+    name: iOS unsigned - GH Releases
     max_build_duration: 60
     instance_type: mac_mini_m2
     environment:
@@ -65,8 +61,8 @@ workflows:
           set -e
           # AppDelegate.swift registers the kirca/apns MethodChannel and handles APNs callbacks.
           cp ios_patches/AppDelegate.swift ios/Runner/AppDelegate.swift
-          # Entitlements: aps-environment=production. Scarlet / non-Apple-Dev may not deliver
-          # real push reliably — known risk, fallback documented in DEPLOY.md.
+          # Entitlements: aps-environment=production. Non-Apple-Dev signing may not deliver
+          # real push reliably - known risk, fallback documented in DEPLOY.md.
           cp ios_patches/Runner.entitlements ios/Runner/Runner.entitlements
           # Wire entitlements into the Xcode project if not already attached.
           PBX=ios/Runner.xcodeproj/project.pbxproj
@@ -97,42 +93,8 @@ workflows:
           cd ../../..
           ls -lh kirca.ipa
 
-      - name: Generate Scarlet source.json
-        script: |
-          set -e
-          IPA_PATH=kirca.ipa
-          VERSION="1.0.${BUILD_NUMBER}"
-          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          SIZE=$(stat -f%z "$IPA_PATH")
-          BASE="https://github.com/${GH_REPO}/releases/latest/download"
-          cat > scarlet-source.json <<JSON
-          {
-            "META": {
-              "repoName": "kirca",
-              "repoIcon": "${BASE}/icon.png"
-            },
-            "Tweaks": [],
-            "Apps": [
-              {
-                "name": "kirca",
-                "version": "${VERSION}",
-                "bundleID": "${BUNDLE_ID}",
-                "down": "${BASE}/kirca.ipa",
-                "category": "Social Networking",
-                "iconURL": "${BASE}/icon.png",
-                "description": "Simple chat. Build ${BUILD_NUMBER} (${DATE}).",
-                "developer": "skyfet",
-                "screenshots": [],
-                "appstore": false
-              }
-            ]
-          }
-          JSON
-          cat scarlet-source.json
-
     artifacts:
       - flutter_app/kirca.ipa
-      - flutter_app/scarlet-source.json
 
     publishing:
       scripts:
@@ -152,4 +114,4 @@ workflows:
               --target "${CM_COMMIT}" \
               --title "Build ${BUILD_NUMBER}" \
               --notes "Automated build ${BUILD_NUMBER}" \
-              kirca.ipa scarlet-source.json
+              kirca.ipa
