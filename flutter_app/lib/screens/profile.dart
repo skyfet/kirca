@@ -3,9 +3,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../api.dart';
 import '../state.dart';
+import '../theme/app_background.dart';
+import '../theme/app_theme.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({super.key});
@@ -25,6 +28,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     _load();
   }
 
+  @override
+  void dispose() {
+    _displayCtrl.dispose();
+    super.dispose();
+  }
+
   Future<void> _load() async {
     final auth = ref.read(authProvider);
     if (auth == null) return;
@@ -41,11 +50,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     if (auth == null) return;
     setState(() => _saving = true);
     try {
-      final p = await Api(token: auth.token)
-          .updateProfile(displayName: _displayCtrl.text.trim().isEmpty ? null : _displayCtrl.text.trim());
+      final p = await Api(token: auth.token).updateProfile(
+        displayName: _displayCtrl.text.trim().isEmpty ? null : _displayCtrl.text.trim(),
+      );
       setState(() => _profile = p);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Сохранено')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Сохранено')),
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -65,13 +77,17 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     final bytes = await File(picked.path).readAsBytes();
     final mime = _mimeFromPath(picked.path);
     if (mime == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Неподдерживаемый формат')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Неподдерживаемый формат')),
+      );
       return;
     }
     try {
       final r = await Api(token: auth.token).uploadAvatar(bytes, mime);
       setState(() {
-        if (_profile != null) _profile = {..._profile!, 'avatar_url': r['avatar_url']};
+        if (_profile != null) {
+          _profile = {..._profile!, 'avatar_url': r['avatar_url']};
+        }
       });
     } catch (e) {
       if (mounted) {
@@ -103,81 +119,15 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   }
 
   Future<bool> _confirm(String text) async {
-    final r = await showDialog<bool>(
+    final r = await GlassDialog.show<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(text),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('Да'),
-          ),
-        ],
-      ),
+      title: text,
+      actions: [
+        GlassDialogAction(label: 'Отмена', onPressed: () => Navigator.pop(context, false)),
+        GlassDialogAction(label: 'Да', isDestructive: true, onPressed: () => Navigator.pop(context, true)),
+      ],
     );
     return r == true;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final auth = ref.watch(authProvider);
-    final avatar = _profile?['avatar_url'] as String?;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Профиль')),
-      body: _profile == null
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                Center(
-                  child: GestureDetector(
-                    onTap: _pickAvatar,
-                    child: CircleAvatar(
-                      radius: 48,
-                      backgroundImage: avatar != null ? NetworkImage(avatar) : null,
-                      child: avatar == null
-                          ? Text(
-                              (auth?.username ?? '?').characters.first.toUpperCase(),
-                              style: const TextStyle(fontSize: 28),
-                            )
-                          : null,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Center(child: TextButton.icon(onPressed: _pickAvatar, icon: const Icon(Icons.image), label: const Text('Сменить аватар'))),
-                const SizedBox(height: 24),
-                Text('@${auth?.username ?? ""}', textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyMedium),
-                const SizedBox(height: 24),
-                TextField(
-                  controller: _displayCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Имя для отображения',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                FilledButton(
-                  onPressed: _saving ? null : _saveDisplayName,
-                  child: Text(_saving ? '...' : 'Сохранить'),
-                ),
-                const Divider(height: 40),
-                OutlinedButton.icon(
-                  onPressed: _logoutAll,
-                  icon: const Icon(Icons.logout),
-                  label: const Text('Выйти со всех устройств'),
-                ),
-                const SizedBox(height: 12),
-                OutlinedButton.icon(
-                  onPressed: _delete,
-                  icon: const Icon(Icons.delete_forever, color: Colors.red),
-                  label: const Text('Удалить аккаунт', style: TextStyle(color: Colors.red)),
-                ),
-              ],
-            ),
-    );
   }
 
   String? _mimeFromPath(String path) {
@@ -188,5 +138,156 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     if (p.endsWith('.gif')) return 'image/gif';
     if (p.endsWith('.heic')) return 'image/heic';
     return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = ref.watch(authProvider);
+    final avatar = _profile?['avatar_url'] as String?;
+    return GlassPage(
+      background: const AppBackground(),
+      statusBarStyle: GlassStatusBarStyle.light,
+      edgeToEdge: true,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        extendBodyBehindAppBar: true,
+        appBar: GlassAppBar(
+          title: const Text(
+            'Профиль',
+            style: TextStyle(color: AppColors.onGlass, fontSize: 17, fontWeight: FontWeight.w600),
+          ),
+        ),
+        body: SafeArea(
+          child: _profile == null
+              ? const Center(child: GlassProgressIndicator.circular(size: 28))
+              : ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+                  children: [
+                    Center(
+                      child: GestureDetector(
+                        onTap: _pickAvatar,
+                        child: Container(
+                          padding: const EdgeInsets.all(3),
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              colors: [AppColors.blobIndigo, AppColors.blobViolet],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                          ),
+                          child: CircleAvatar(
+                            radius: 50,
+                            backgroundColor: AppColors.bgMid,
+                            backgroundImage:
+                                avatar != null ? NetworkImage(avatar) : null,
+                            child: avatar == null
+                                ? Text(
+                                    (auth?.username ?? '?')
+                                        .characters
+                                        .first
+                                        .toUpperCase(),
+                                    style: const TextStyle(
+                                      fontSize: 30,
+                                      color: AppColors.onGlass,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  )
+                                : null,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Center(
+                      child: TextButton.icon(
+                        onPressed: _pickAvatar,
+                        icon: const Icon(Icons.image_outlined, color: AppColors.onGlassMuted, size: 18),
+                        label: const Text('Сменить аватар',
+                            style: TextStyle(color: AppColors.onGlassMuted)),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Center(
+                      child: Text(
+                        '@${auth?.username ?? ""}',
+                        style: const TextStyle(color: AppColors.onGlassMuted),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    GlassPanel(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 8, left: 2),
+                            child: Text(
+                              'Имя для отображения',
+                              style: TextStyle(color: AppColors.onGlassMuted, fontSize: 12),
+                            ),
+                          ),
+                          GlassTextField(
+                            controller: _displayCtrl,
+                            placeholder: 'Как тебя называть',
+                          ),
+                          const SizedBox(height: 12),
+                          GlassButton.custom(
+                            onTap: _saving ? () {} : _saveDisplayName,
+                            width: double.infinity,
+                            height: 44,
+                            glowColor: AppColors.accent,
+                            child: Center(
+                              child: _saving
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: AppColors.onGlass,
+                                      ),
+                                    )
+                                  : const Text(
+                                      'Сохранить',
+                                      style: TextStyle(
+                                        color: AppColors.onGlass,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    GlassButton.custom(
+                      onTap: _logoutAll,
+                      width: double.infinity,
+                      height: 44,
+                      child: const Center(
+                        child: Text(
+                          'Выйти со всех устройств',
+                          style: TextStyle(color: AppColors.onGlass),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    GlassButton.custom(
+                      onTap: _delete,
+                      width: double.infinity,
+                      height: 44,
+                      glowColor: AppColors.danger,
+                      child: const Center(
+                        child: Text(
+                          'Удалить аккаунт',
+                          style: TextStyle(color: AppColors.danger, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
   }
 }

@@ -6,49 +6,33 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
 import '../api.dart';
 import '../config.dart';
 import '../state.dart';
+import '../storage/cache.dart';
 import '../storage/outbox.dart';
+import '../theme/app_background.dart';
+import '../theme/app_theme.dart';
 import 'members.dart';
 
-enum _Status { sending, sent }
+enum _SendStatus { sending, sent }
 
-class _Attachment {
-  final String? id;
-  final String? url;
-  final String mime;
-  final int? width;
-  final int? height;
-  _Attachment({this.id, this.url, required this.mime, this.width, this.height});
-}
-
-class _Msg {
-  String? serverId;
-  final String? clientId;
-  final String userId;
-  final String username;
-  String text;
-  int createdAt;
-  int? editedAt;
-  int? deletedAt;
-  _Attachment? attachment;
-  _Status status;
-
-  _Msg({
-    this.serverId,
-    this.clientId,
-    required this.userId,
-    required this.username,
+class _Pending {
+  final String clientId;
+  final String text;
+  final int createdAt;
+  CachedAttachment? attachment;
+  _SendStatus status;
+  _Pending({
+    required this.clientId,
     required this.text,
     required this.createdAt,
-    this.editedAt,
-    this.deletedAt,
     this.attachment,
-    required this.status,
+    this.status = _SendStatus.sending,
   });
 }
 
@@ -79,8 +63,8 @@ class ChatScreen extends ConsumerStatefulWidget {
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObserver {
-  final List<_Msg> _messages = [];
+class _ChatScreenState extends ConsumerState<ChatScreen>
+    with WidgetsBindingObserver {
   final TextEditingController _ctrl = TextEditingController();
   final ScrollController _scroll = ScrollController();
 
@@ -90,24 +74,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
   bool _disposed = false;
   bool _muted = false;
 
-  final Map<String, _Msg> _pending = {};
+  /// pending (sending) messages, key = clientId.
+  final Map<String, _Pending> _pending = {};
 
-  // Метка последнего полученного сообщения для catchup-запроса при реконнекте.
   int _lastSeenAt = 0;
-  // Метка, до которой мы пометили «прочитано».
   int _lastReadSent = 0;
-  // Подгрузка истории вверх.
+
   bool _loadingOlder = false;
   bool _hasMoreOlder = true;
 
-  // Typing-индикатор: пиры, которые сейчас печатают (user_id → таймер сброса).
+  // typing: peer_id -> reset timer.
   final Map<String, Timer> _peerTyping = {};
-  // Своё состояние: когда последний раз слали typing=true.
   DateTime _lastTypingSent = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _typingStopTimer;
 
   int _attempt = 0;
   Timer? _reconnectTimer;
+
+  // Хранит id последнего сообщения, чтобы автоскроллить только при появлении
+  // нового, а не на каждое изменение (edit).
+  String? _lastTailId;
+  bool _didInitialScroll = false;
 
   @override
   void initState() {
@@ -115,51 +102,43 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     _muted = widget.muted;
     WidgetsBinding.instance.addObserver(this);
     _scroll.addListener(_onScroll);
-    _init();
+    // Сообщаем глобальному WS, что активная комната — эта, чтобы не бампить
+    // unread на свои же входящие сюда.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_disposed) {
+        ref.read(currentRoomProvider.notifier).state = widget.roomId;
+      }
+    });
+    _hydrateAndConnect();
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _maybeMarkRead();
-    }
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s == AppLifecycleState.resumed) _maybeMarkRead();
   }
 
-  Future<void> _init() async {
+  Future<void> _hydrateAndConnect() async {
+    // 1. Загрузить outbox → pending.
     try {
       final saved = await Outbox.byRoom(widget.roomId);
-      final auth = ref.read(authProvider);
       for (final s in saved) {
-        final m = _Msg(
+        _pending[s.clientId] = _Pending(
           clientId: s.clientId,
-          userId: auth?.userId ?? '',
-          username: auth?.username ?? '',
           text: s.text,
           createdAt: s.createdAt,
-          status: _Status.sending,
         );
-        _messages.add(m);
-        _pending[s.clientId] = m;
       }
       if (saved.isNotEmpty && mounted) setState(() {});
     } catch (_) {}
 
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-    try {
-      final h = await Api(token: auth.token).history(widget.roomId);
-      if (_disposed) return;
-      for (final m in h.cast<Map<String, dynamic>>()) {
-        _ingestServerMessage(m, scroll: false);
-      }
-      _scrollToEnd();
-    } catch (_) {}
+    // 2. Стартовать WS. История подтянется через `messagesProvider`.
     _connect();
   }
 
   void _onScroll() {
-    // Подгружаем старые сообщения при скролле к самому верху.
-    if (_scroll.position.pixels <= 80 && !_loadingOlder && _hasMoreOlder && _messages.isNotEmpty) {
+    if (_scroll.position.pixels <= 80 &&
+        !_loadingOlder &&
+        _hasMoreOlder) {
       _loadOlder();
     }
   }
@@ -167,82 +146,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
   Future<void> _loadOlder() async {
     final auth = ref.read(authProvider);
     if (auth == null) return;
+    final cached = await MessagesCache.snapshot(widget.roomId);
+    if (cached.isEmpty) {
+      _hasMoreOlder = false;
+      return;
+    }
     _loadingOlder = true;
     if (mounted) setState(() {});
     try {
-      // ищем самый ранний реальный (с serverId) — outbox-сообщения не считаются.
-      final firstServer = _messages.firstWhere(
-        (m) => m.serverId != null,
-        orElse: () => _Msg(userId: '', username: '', text: '', createdAt: 0, status: _Status.sent),
-      );
-      if (firstServer.createdAt == 0) {
-        _hasMoreOlder = false;
-        return;
-      }
-      final h = await Api(token: auth.token).history(
-        widget.roomId,
-        before: firstServer.createdAt,
-        limit: 50,
-      );
+      final before = cached.first.createdAt;
+      final h = await Api(token: auth.token)
+          .history(widget.roomId, before: before, limit: 50);
       if (h.isEmpty) {
         _hasMoreOlder = false;
         return;
       }
-      // сохраняем offset скролла, чтобы не «прыгало»
       final beforeMax = _scroll.position.maxScrollExtent;
       final beforePixels = _scroll.position.pixels;
-      // Префиксим список (старые в начале).
-      final older = <_Msg>[];
-      for (final raw in h.cast<Map<String, dynamic>>()) {
-        final m = _msgFromMap(raw);
-        // Игнорим дубли, если ровно граница.
-        if (m.serverId != null &&
-            _messages.any((x) => x.serverId == m.serverId)) {
-          continue;
-        }
-        older.add(m);
-      }
-      if (older.isEmpty) {
-        _hasMoreOlder = h.length >= 50;
-        return;
-      }
-      _messages.insertAll(0, older);
-      if (mounted) setState(() {});
+      await MessagesCache.upsertAll(widget.roomId, h.cast<Map<String, dynamic>>());
+      if (h.length < 50) _hasMoreOlder = false;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!_scroll.hasClients) return;
         final newMax = _scroll.position.maxScrollExtent;
         _scroll.jumpTo(beforePixels + (newMax - beforeMax));
       });
     } catch (_) {
-      // не блокируем UI, попробуем в другой раз
+      // тихо — в следующий раз
     } finally {
       _loadingOlder = false;
       if (mounted) setState(() {});
     }
-  }
-
-  _Msg _msgFromMap(Map<String, dynamic> m) {
-    final att = m['attachment'] as Map<String, dynamic>?;
-    return _Msg(
-      serverId: m['id']?.toString(),
-      clientId: m['client_id']?.toString(),
-      userId: m['user_id']?.toString() ?? '',
-      username: m['username']?.toString() ?? '',
-      text: m['text']?.toString() ?? '',
-      createdAt: (m['created_at'] as num?)?.toInt() ?? 0,
-      editedAt: (m['edited_at'] as num?)?.toInt(),
-      deletedAt: (m['deleted_at'] as num?)?.toInt(),
-      attachment: att == null
-          ? null
-          : _Attachment(
-              id: att['id']?.toString(),
-              url: att['url']?.toString(),
-              mime: att['mime']?.toString() ?? 'image/*',
-              width: (att['width'] as num?)?.toInt(),
-              height: (att['height'] as num?)?.toInt(),
-            ),
-      status: _Status.sent,
-    );
   }
 
   void _connect() {
@@ -250,7 +183,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     final auth = ref.read(authProvider);
     if (auth == null) return;
 
-    final uri = Uri.parse('${Config.wsBase}/rooms/${widget.roomId}/ws?token=${auth.token}');
+    final uri = Uri.parse(
+        '${Config.wsBase}/rooms/${widget.roomId}/ws?token=${auth.token}');
     final ws = WebSocketChannel.connect(uri);
     _ws = ws;
 
@@ -260,26 +194,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
         if (!_connected && mounted) setState(() => _connected = true);
         try {
           final m = jsonDecode(raw as String) as Map<String, dynamic>;
-          final type = m['type'];
-          switch (type) {
+          switch (m['type']) {
             case 'msg':
-              _ingestServerMessage(m);
+              _onWsMessage(m);
               break;
             case 'edit':
-              _applyEdit(m);
+              _onWsEdit(m);
               break;
             case 'delete':
-              _applyDelete(m);
+              _onWsDelete(m);
               break;
             case 'typing':
-              _applyTyping(m);
-              break;
-            case 'read':
-              // на эту версию визуализация «кто прочитал» опущена;
-              // событие игнорируем.
-              break;
-            case 'presence':
-              // обновлять иконки в шапке смысла нет — это список участников.
+              _onWsTyping(m);
               break;
             case 'error':
               if (m['code']?.toString() == 'rate_limited' && mounted) {
@@ -296,15 +222,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
       cancelOnError: true,
     );
 
+    // Catchup пропущенного через REST + переотправка pending.
     Future<void>.microtask(() async {
       if (_lastSeenAt > 0) {
         try {
           final h = await Api(token: auth.token)
               .history(widget.roomId, after: _lastSeenAt, limit: 200);
-          for (final m in h.cast<Map<String, dynamic>>()) {
-            _ingestServerMessage(m, scroll: false);
+          if (h.isNotEmpty) {
+            await MessagesCache.upsertAll(
+                widget.roomId, h.cast<Map<String, dynamic>>());
           }
-          _scrollToEnd();
         } catch (_) {}
       }
       _resendPending();
@@ -312,33 +239,61 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     });
   }
 
-  void _applyEdit(Map<String, dynamic> m) {
-    final id = m['id']?.toString();
-    if (id == null) return;
-    for (final x in _messages) {
-      if (x.serverId == id) {
-        x.text = m['text']?.toString() ?? x.text;
-        x.editedAt = (m['edited_at'] as num?)?.toInt();
-        if (mounted) setState(() {});
-        break;
-      }
+  void _onDisconnect() {
+    if (_disposed) return;
+    final code = _ws?.closeCode;
+    _sub?.cancel();
+    _sub = null;
+    try { _ws?.sink.close(); } catch (_) {}
+    _ws = null;
+    if (mounted) setState(() => _connected = false);
+
+    if (code == 1008) {
+      ref.read(authProvider.notifier).forceLogout();
+      return;
     }
+    const delays = [1, 2, 4, 8, 16, 30];
+    final secs = delays[min(_attempt, delays.length - 1)];
+    _attempt++;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(Duration(seconds: secs), _connect);
   }
 
-  void _applyDelete(Map<String, dynamic> m) {
-    final id = m['id']?.toString();
-    if (id == null) return;
-    for (final x in _messages) {
-      if (x.serverId == id) {
-        x.text = '';
-        x.deletedAt = (m['deleted_at'] as num?)?.toInt() ?? DateTime.now().millisecondsSinceEpoch;
-        if (mounted) setState(() {});
-        break;
-      }
+  void _onWsMessage(Map<String, dynamic> m) {
+    final clientId = m['client_id']?.toString();
+    final createdAt = (m['created_at'] as num?)?.toInt() ?? 0;
+    if (clientId != null && _pending.containsKey(clientId)) {
+      _pending.remove(clientId);
+      Outbox.remove(clientId);
     }
+    MessagesCache.upsert(widget.roomId, m);
+    _lastSeenAt = max(_lastSeenAt, createdAt);
+    if (mounted) setState(() {});
+    _maybeMarkRead();
   }
 
-  void _applyTyping(Map<String, dynamic> m) {
+  void _onWsEdit(Map<String, dynamic> m) {
+    final id = m['id']?.toString();
+    if (id == null) return;
+    MessagesCache.applyEdit(
+      widget.roomId,
+      id,
+      m['text']?.toString() ?? '',
+      (m['edited_at'] as num?)?.toInt(),
+    );
+  }
+
+  void _onWsDelete(Map<String, dynamic> m) {
+    final id = m['id']?.toString();
+    if (id == null) return;
+    MessagesCache.applyDelete(
+      widget.roomId,
+      id,
+      (m['deleted_at'] as num?)?.toInt(),
+    );
+  }
+
+  void _onWsTyping(Map<String, dynamic> m) {
     final uid = m['user_id']?.toString();
     final me = ref.read(authProvider)?.userId;
     if (uid == null || uid == me) return;
@@ -355,70 +310,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     if (mounted) setState(() {});
   }
 
-  void _onDisconnect() {
-    if (_disposed) return;
-    final code = _ws?.closeCode;
-    _sub?.cancel();
-    _sub = null;
-    try { _ws?.sink.close(); } catch (_) {}
-    _ws = null;
-    if (mounted) setState(() => _connected = false);
-
-    if (code == 1008) {
-      ref.read(authProvider.notifier).forceLogout();
-      return;
-    }
-
-    const delays = [1, 2, 4, 8, 16, 30];
-    final secs = delays[min(_attempt, delays.length - 1)];
-    _attempt++;
-    _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(Duration(seconds: secs), _connect);
-  }
-
-  void _ingestServerMessage(Map<String, dynamic> m, {bool scroll = true}) {
-    final serverId = m['id']?.toString();
-    if (serverId == null) return;
-    final clientId = m['client_id']?.toString();
-    final createdAt = (m['created_at'] as num?)?.toInt() ?? 0;
-
-    if (clientId != null && _pending.containsKey(clientId)) {
-      final p = _pending.remove(clientId)!;
-      p.serverId = serverId;
-      p.createdAt = createdAt;
-      p.status = _Status.sent;
-      final att = m['attachment'] as Map<String, dynamic>?;
-      if (att != null) {
-        p.attachment = _Attachment(
-          id: att['id']?.toString(),
-          url: att['url']?.toString(),
-          mime: att['mime']?.toString() ?? 'image/*',
-          width: (att['width'] as num?)?.toInt(),
-          height: (att['height'] as num?)?.toInt(),
-        );
-      }
-      _lastSeenAt = max(_lastSeenAt, createdAt);
-      Outbox.remove(clientId);
-      if (mounted) setState(() {});
-      if (scroll) _scrollToEnd();
-      _maybeMarkRead();
-      return;
-    }
-
-    for (final existing in _messages) {
-      if (existing.serverId == serverId) {
-        _lastSeenAt = max(_lastSeenAt, createdAt);
-        return;
-      }
-    }
-
-    _messages.add(_msgFromMap(m));
-    _lastSeenAt = max(_lastSeenAt, createdAt);
-    if (mounted) setState(() {});
-    if (scroll) _scrollToEnd();
-    _maybeMarkRead();
-  }
-
   Future<void> _maybeMarkRead() async {
     if (_lastSeenAt <= _lastReadSent) return;
     final auth = ref.read(authProvider);
@@ -427,17 +318,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     _lastReadSent = ts;
     try {
       await Api(token: auth.token).markRead(widget.roomId, ts);
-    } catch (_) { /* best-effort */ }
+      await RoomsCache.setUnread(widget.roomId, 0);
+    } catch (_) {}
   }
 
-  void _scrollToEnd() {
+  void _scrollToEnd({bool animate = true}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOut,
-        );
+      if (!_scroll.hasClients) return;
+      final target = _scroll.position.maxScrollExtent;
+      if (animate) {
+        _scroll.animateTo(target,
+            duration: const Duration(milliseconds: 180), curve: Curves.easeOut);
+      } else {
+        _scroll.jumpTo(target);
       }
     });
   }
@@ -466,51 +359,45 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     _sendCore(text: t);
   }
 
-  void _sendCore({String text = '', String? attachmentId, _Attachment? attPreview}) {
+  void _sendCore({String text = '', String? attachmentId, CachedAttachment? attPreview}) {
     final auth = ref.read(authProvider);
     if (auth == null) return;
     final clientId = _uuidV4();
     final createdAt = DateTime.now().millisecondsSinceEpoch;
-    final msg = _Msg(
+    _pending[clientId] = _Pending(
       clientId: clientId,
-      userId: auth.userId,
-      username: auth.username,
       text: text,
       createdAt: createdAt,
       attachment: attPreview,
-      status: _Status.sending,
     );
-    _messages.add(msg);
-    _pending[clientId] = msg;
     if (text.isNotEmpty) _ctrl.clear();
     setState(() {});
     _scrollToEnd();
-
     Outbox.add(
       clientId: clientId,
       roomId: widget.roomId,
       text: text,
       createdAt: createdAt,
     );
-    _trySend(msg, attachmentId: attachmentId);
+    _wsSend(clientId, text, attachmentId);
   }
 
-  void _trySend(_Msg m, {String? attachmentId}) {
+  void _wsSend(String clientId, String text, String? attachmentId) {
     final ws = _ws;
     if (ws == null) return;
     try {
       ws.sink.add(jsonEncode({
         'type': 'msg',
-        'client_id': m.clientId,
-        if (m.text.isNotEmpty) 'text': m.text,
+        'client_id': clientId,
+        if (text.isNotEmpty) 'text': text,
         if (attachmentId != null) 'attachment_id': attachmentId,
       }));
     } catch (_) {}
   }
 
   void _resendPending() {
-    for (final m in _pending.values) {
-      _trySend(m, attachmentId: m.attachment?.id);
+    for (final p in _pending.values) {
+      _wsSend(p.clientId, p.text, p.attachment?.id);
     }
   }
 
@@ -518,21 +405,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     final auth = ref.read(authProvider);
     if (auth == null) return;
     final picker = ImagePicker();
-    final picked = await picker.pickImage(source: ImageSource.gallery, maxWidth: 2048, maxHeight: 2048);
+    final picked = await picker.pickImage(
+        source: ImageSource.gallery, maxWidth: 2048, maxHeight: 2048);
     if (picked == null) return;
     final bytes = await File(picked.path).readAsBytes();
     final mime = _mimeFromPath(picked.path);
     if (mime == null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Неподдерживаемый формат')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Неподдерживаемый формат')),
+        );
       }
       return;
     }
     try {
-      final reserved = await Api(token: auth.token).reserveUpload(
-        mime: mime,
-        size: bytes.length,
-      );
+      final reserved =
+          await Api(token: auth.token).reserveUpload(mime: mime, size: bytes.length);
       final uploadUrl = reserved['upload_url']?.toString();
       final attachmentId = reserved['id']?.toString();
       final publicUrl = reserved['public_url']?.toString();
@@ -540,7 +428,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
       await Api(token: auth.token).uploadBytes(uploadUrl, bytes, mime);
       _sendCore(
         attachmentId: attachmentId,
-        attPreview: _Attachment(id: attachmentId, url: publicUrl, mime: mime),
+        attPreview: CachedAttachment(id: attachmentId, url: publicUrl, mime: mime),
       );
     } catch (e) {
       if (mounted) {
@@ -559,31 +447,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     return null;
   }
 
-  Future<void> _editMsg(_Msg m) async {
-    if (m.serverId == null) return;
+  Future<void> _editMsg(CachedMessage m) async {
     final auth = ref.read(authProvider);
     if (auth == null) return;
     final ctrl = TextEditingController(text: m.text);
-    final ok = await showDialog<bool>(
+    final ok = await GlassDialog.show<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Редактировать'),
-        content: TextField(controller: ctrl, autofocus: true, maxLines: 4),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Сохранить')),
-        ],
-      ),
+      title: 'Редактировать',
+      content: GlassTextField(controller: ctrl, autofocus: true, maxLines: 4),
+      actions: [
+        GlassDialogAction(label: 'Отмена', onPressed: () => Navigator.pop(context, false)),
+        GlassDialogAction(label: 'Сохранить', isPrimary: true, onPressed: () => Navigator.pop(context, true)),
+      ],
     );
     if (ok != true) return;
     final text = ctrl.text.trim();
     if (text.isEmpty || text == m.text) return;
     try {
-      await Api(token: auth.token).editMessage(widget.roomId, m.serverId!, text);
-      // оптимистично применяем (DO разошлёт edit-событие — но мы можем уже отрисовать)
-      m.text = text;
-      m.editedAt = DateTime.now().millisecondsSinceEpoch;
-      if (mounted) setState(() {});
+      await Api(token: auth.token).editMessage(widget.roomId, m.id, text);
+      await MessagesCache.applyEdit(widget.roomId, m.id, text, DateTime.now().millisecondsSinceEpoch);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
@@ -591,30 +473,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     }
   }
 
-  Future<void> _deleteMsg(_Msg m) async {
-    if (m.serverId == null) return;
+  Future<void> _deleteMsg(CachedMessage m) async {
     final auth = ref.read(authProvider);
     if (auth == null) return;
-    final ok = await showDialog<bool>(
+    final ok = await GlassDialog.show<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Удалить сообщение?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Удалить'),
-          ),
-        ],
-      ),
+      title: 'Удалить сообщение?',
+      actions: [
+        GlassDialogAction(label: 'Отмена', onPressed: () => Navigator.pop(context, false)),
+        GlassDialogAction(label: 'Удалить', isDestructive: true, onPressed: () => Navigator.pop(context, true)),
+      ],
     );
     if (ok != true) return;
     try {
-      await Api(token: auth.token).deleteMessage(widget.roomId, m.serverId!);
-      m.text = '';
-      m.deletedAt = DateTime.now().millisecondsSinceEpoch;
-      if (mounted) setState(() {});
+      await Api(token: auth.token).deleteMessage(widget.roomId, m.id);
+      await MessagesCache.applyDelete(widget.roomId, m.id, DateTime.now().millisecondsSinceEpoch);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
@@ -627,16 +500,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     if (auth == null) return;
     final next = !_muted;
     setState(() => _muted = next);
+    await RoomsCache.setMuted(widget.roomId, next);
     try {
       await Api(token: auth.token).setMuted(widget.roomId, next);
     } catch (_) {
       setState(() => _muted = !next);
+      await RoomsCache.setMuted(widget.roomId, !next);
     }
   }
 
   @override
   void dispose() {
     _disposed = true;
+    // Снимаем флаг активной комнаты — теперь фоновые сообщения снова
+    // увеличивают unread.
+    final notifier = ref.read(currentRoomProvider.notifier);
+    if (notifier.state == widget.roomId) {
+      notifier.state = null;
+    }
     WidgetsBinding.instance.removeObserver(this);
     _reconnectTimer?.cancel();
     _typingStopTimer?.cancel();
@@ -653,215 +534,351 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
 
   @override
   Widget build(BuildContext context) {
-    final me = ref.watch(authProvider)?.userId;
-    final typingNames = _peerTyping.length;
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.roomName),
-        actions: [
-          IconButton(
-            tooltip: _muted ? 'Включить уведомления' : 'Заглушить',
-            icon: Icon(_muted ? Icons.notifications_off : Icons.notifications_active),
-            onPressed: _toggleMute,
-          ),
-          IconButton(
-            tooltip: 'Участники',
-            icon: const Icon(Icons.people_outline),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => MembersScreen(
-                  roomId: widget.roomId,
-                  roomName: widget.roomName,
-                  isPublic: widget.isPublic,
-                ),
-              ),
-            ),
-          ),
-        ],
-        bottom: _connected
-            ? null
-            : const PreferredSize(
-                preferredSize: Size.fromHeight(2),
-                child: LinearProgressIndicator(minHeight: 2),
-              ),
-      ),
-      body: Column(
-        children: [
-          if (_loadingOlder)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 4),
-              child: SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-            ),
-          Expanded(
-            child: ListView.builder(
-              controller: _scroll,
-              padding: const EdgeInsets.all(8),
-              itemCount: _messages.length,
-              itemBuilder: (_, i) {
-                final m = _messages[i];
-                final mine = m.userId == me;
-                return GestureDetector(
-                  onLongPress: mine && m.serverId != null && m.deletedAt == null
-                      ? () => _showMsgMenu(m)
-                      : null,
-                  child: Align(
-                    alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-                    child: Container(
-                      constraints: BoxConstraints(
-                        maxWidth: MediaQuery.of(context).size.width * 0.75,
-                      ),
-                      margin: const EdgeInsets.symmetric(vertical: 4),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: mine ? Colors.indigo.shade400 : Colors.grey.shade300,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (!mine)
-                            Text(
-                              m.username,
-                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                            ),
-                          if (m.attachment != null && m.attachment!.url != null)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 4, top: 2),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: Image.network(
-                                  m.attachment!.url!,
-                                  width: 220,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) => const Icon(Icons.broken_image),
-                                ),
-                              ),
-                            ),
-                          if (m.deletedAt != null)
-                            Text(
-                              'сообщение удалено',
-                              style: TextStyle(
-                                fontStyle: FontStyle.italic,
-                                color: mine ? Colors.white70 : Colors.black54,
-                              ),
-                            )
-                          else if (m.text.isNotEmpty)
-                            Text(
-                              m.text,
-                              style: TextStyle(color: mine ? Colors.white : Colors.black87),
-                            ),
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (m.editedAt != null && m.deletedAt == null)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 2, right: 4),
-                                  child: Text(
-                                    'изменено',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: mine ? Colors.white60 : Colors.black45,
-                                    ),
-                                  ),
-                                ),
-                              if (mine)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 2),
-                                  child: Icon(
-                                    m.status == _Status.sent ? Icons.done_all : Icons.access_time,
-                                    size: 12,
-                                    color: Colors.white70,
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          if (typingNames > 0)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  typingNames == 1 ? 'кто-то печатает…' : '$typingNames пользователей печатают…',
-                  style: const TextStyle(color: Colors.black54, fontSize: 12),
-                ),
-              ),
-            ),
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              child: Row(
-                children: [
-                  IconButton(
-                    tooltip: 'Прикрепить',
-                    icon: const Icon(Icons.image_outlined),
-                    onPressed: _pickAndSendImage,
-                  ),
-                  Expanded(
-                    child: TextField(
-                      controller: _ctrl,
-                      decoration: const InputDecoration(
-                        hintText: 'Сообщение...',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      minLines: 1,
-                      maxLines: 5,
-                      textInputAction: TextInputAction.send,
-                      onChanged: _onTextChanged,
-                      onSubmitted: (_) => _send(),
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  IconButton.filled(
-                    onPressed: _send,
-                    icon: const Icon(Icons.send),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+    final me = ref.watch(authProvider)?.userId ?? '';
+    final myUsername = ref.watch(authProvider)?.username ?? '';
+    final cachedAsync = ref.watch(messagesProvider(widget.roomId));
+    final cached = cachedAsync.valueOrNull ?? const <CachedMessage>[];
 
-  void _showMsgMenu(_Msg m) {
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (m.text.isNotEmpty)
-              ListTile(
-                leading: const Icon(Icons.edit),
-                title: const Text('Редактировать'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _editMsg(m);
-                },
+    // Реагируем на появление нового хвостового сообщения вне build-цикла:
+    // обновить _lastSeenAt, скролл вниз, mark-read.
+    ref.listen<AsyncValue<List<CachedMessage>>>(
+      messagesProvider(widget.roomId),
+      (prev, next) {
+        final list = next.valueOrNull;
+        if (list == null || list.isEmpty) return;
+        _lastSeenAt = max(_lastSeenAt, list.last.createdAt);
+        if (list.last.id != _lastTailId) {
+          _lastTailId = list.last.id;
+          _scrollToEnd();
+          _maybeMarkRead();
+        }
+      },
+    );
+
+    // Один разовый скролл в конец при первом появлении кэша.
+    if (!_didInitialScroll && cached.isNotEmpty) {
+      _didInitialScroll = true;
+      _lastTailId = cached.last.id;
+      _lastSeenAt = max(_lastSeenAt, cached.last.createdAt);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToEnd(animate: false);
+        _maybeMarkRead();
+      });
+    }
+
+    final allItems = <_Row>[];
+    for (final m in cached) {
+      allItems.add(_Row.server(m));
+    }
+    for (final p in _pending.values) {
+      allItems.add(_Row.pending(p, me, myUsername));
+    }
+    allItems.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+
+    return GlassPage(
+      background: const AppBackground(),
+      statusBarStyle: GlassStatusBarStyle.light,
+      edgeToEdge: true,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        extendBodyBehindAppBar: true,
+        extendBody: true,
+        appBar: GlassAppBar(
+          title: Text(
+            widget.roomName,
+            style: const TextStyle(
+              color: AppColors.onGlass,
+              fontWeight: FontWeight.w600,
+              fontSize: 16,
+            ),
+          ),
+          actions: [
+            GlassIconButton(
+              size: 36,
+              icon: Icon(
+                _muted ? Icons.notifications_off : Icons.notifications_active,
+                color: AppColors.onGlass,
               ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline, color: Colors.red),
-              title: const Text('Удалить', style: TextStyle(color: Colors.red)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _deleteMsg(m);
-              },
+              onPressed: _toggleMute,
+            ),
+            const SizedBox(width: 6),
+            GlassIconButton(
+              size: 36,
+              icon: const Icon(Icons.people_outline, color: AppColors.onGlass),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => MembersScreen(
+                    roomId: widget.roomId,
+                    roomName: widget.roomName,
+                    isPublic: widget.isPublic,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
+        ),
+        body: Column(
+          children: [
+            if (!_connected)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+                child: GlassProgressIndicator.linear(height: 2, minWidth: 60),
+              ),
+            if (_loadingOlder)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 6),
+                child: GlassProgressIndicator.circular(size: 18),
+              ),
+            Expanded(
+              child: ListView.builder(
+                controller: _scroll,
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+                itemCount: allItems.length,
+                itemBuilder: (_, i) => _bubble(allItems[i], me),
+              ),
+            ),
+            if (_peerTyping.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: GlassChip(
+                    label: _peerTyping.length == 1
+                        ? 'печатает…'
+                        : '${_peerTyping.length} печатают…',
+                    icon: const Icon(Icons.more_horiz, size: 14, color: AppColors.onGlassMuted),
+                  ),
+                ),
+              ),
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 8),
+                child: GlassPanel(
+                  padding: const EdgeInsets.fromLTRB(6, 6, 6, 6),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      GlassIconButton(
+                        size: 38,
+                        icon: const Icon(Icons.image_outlined, color: AppColors.onGlass),
+                        onPressed: _pickAndSendImage,
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: GlassTextField(
+                          controller: _ctrl,
+                          placeholder: 'Сообщение…',
+                          minLines: 1,
+                          maxLines: 5,
+                          textInputAction: TextInputAction.send,
+                          onChanged: _onTextChanged,
+                          onSubmitted: (_) => _send(),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      GlassIconButton(
+                        size: 42,
+                        icon: const Icon(Icons.send_rounded, color: AppColors.onGlass),
+                        onPressed: _send,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ),
           ],
         ),
       ),
     );
   }
+
+  Widget _bubble(_Row r, String me) {
+    final mine = r.userId == me;
+    final maxW = MediaQuery.of(context).size.width * 0.75;
+    final canEdit = r.kind == _RowKind.server && mine && !r.deleted;
+
+    final bubble = Container(
+      constraints: BoxConstraints(maxWidth: maxW),
+      margin: const EdgeInsets.symmetric(vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        gradient: mine
+            ? const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xCC6E6BFF), Color(0xCCB46CFF)],
+              )
+            : null,
+        color: mine ? null : const Color(0x1FFFFFFF),
+        border: Border.all(color: const Color(0x33FFFFFF), width: 0.5),
+        borderRadius: BorderRadius.only(
+          topLeft: const Radius.circular(16),
+          topRight: const Radius.circular(16),
+          bottomLeft: Radius.circular(mine ? 16 : 4),
+          bottomRight: Radius.circular(mine ? 4 : 16),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (!mine && r.username.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 2),
+              child: Text(
+                r.username,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.onGlassMuted,
+                ),
+              ),
+            ),
+          if (r.attachmentUrl != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, bottom: 4),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Image.network(
+                  r.attachmentUrl!,
+                  width: 220,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) =>
+                      const Icon(Icons.broken_image, color: AppColors.onGlassDim),
+                ),
+              ),
+            ),
+          if (r.deleted)
+            const Text(
+              'сообщение удалено',
+              style: TextStyle(
+                fontStyle: FontStyle.italic,
+                color: AppColors.onGlassDim,
+              ),
+            )
+          else if (r.text.isNotEmpty)
+            Text(
+              r.text,
+              style: const TextStyle(color: AppColors.onGlass, height: 1.3),
+            ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (r.edited && !r.deleted)
+                const Padding(
+                  padding: EdgeInsets.only(top: 2, right: 6),
+                  child: Text(
+                    'изменено',
+                    style: TextStyle(fontSize: 10, color: AppColors.onGlassDim),
+                  ),
+                ),
+              if (mine)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Icon(
+                    r.kind == _RowKind.pending
+                        ? Icons.access_time
+                        : Icons.done_all,
+                    size: 12,
+                    color: AppColors.onGlassDim,
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    return Align(
+      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+      child: GestureDetector(
+        onLongPress: canEdit ? () => _showMsgMenu(r.serverMsg!) : null,
+        child: bubble,
+      ),
+    );
+  }
+
+  void _showMsgMenu(CachedMessage m) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: GlassPanel(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (m.text.isNotEmpty)
+                  GlassListTile.standalone(
+                    leading: const Icon(Icons.edit_outlined, color: AppColors.onGlass),
+                    title: const Text('Редактировать', style: TextStyle(color: AppColors.onGlass)),
+                    onTap: () { Navigator.pop(ctx); _editMsg(m); },
+                  ),
+                GlassListTile.standalone(
+                  leading: const Icon(Icons.delete_outline, color: AppColors.danger),
+                  title: const Text('Удалить', style: TextStyle(color: AppColors.danger)),
+                  onTap: () { Navigator.pop(ctx); _deleteMsg(m); },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _RowKind { server, pending }
+
+class _Row {
+  final _RowKind kind;
+  final String userId;
+  final String username;
+  final String text;
+  final int createdAt;
+  final bool edited;
+  final bool deleted;
+  final String? attachmentUrl;
+  final CachedMessage? serverMsg;
+
+  _Row._({
+    required this.kind,
+    required this.userId,
+    required this.username,
+    required this.text,
+    required this.createdAt,
+    required this.edited,
+    required this.deleted,
+    required this.attachmentUrl,
+    required this.serverMsg,
+  });
+
+  factory _Row.server(CachedMessage m) => _Row._(
+        kind: _RowKind.server,
+        userId: m.userId,
+        username: m.username,
+        text: m.text,
+        createdAt: m.createdAt,
+        edited: m.editedAt != null,
+        deleted: m.deletedAt != null,
+        attachmentUrl: m.attachment?.url,
+        serverMsg: m,
+      );
+
+  factory _Row.pending(_Pending p, String userId, String username) => _Row._(
+        kind: _RowKind.pending,
+        userId: userId,
+        username: username,
+        text: p.text,
+        createdAt: p.createdAt,
+        edited: false,
+        deleted: false,
+        attachmentUrl: p.attachment?.url,
+        serverMsg: null,
+      );
 }

@@ -1,4 +1,5 @@
 import { getUser, isRoomAccessible, requireAuth, uuid } from "../lib/middleware";
+import { notifyUser } from "../lib/notify";
 import {
   createApp,
   createRoute,
@@ -100,6 +101,21 @@ roomRoutes.openapi(createRoomRoute, async (c) => {
     )
     .bind(u.id, id, "owner", now)
     .run();
+  // Уведомим другие устройства владельца: новая комната.
+  c.executionCtx.waitUntil(
+    notifyUser(c.env, u.id, {
+      type: "room_added",
+      room: {
+        id,
+        name: name.trim(),
+        is_public: isPublic === 1,
+        is_member: true,
+        role: "owner",
+        muted: false,
+        unread: 0,
+      },
+    }),
+  );
   return c.json({ id, name: name.trim(), is_public: isPublic === 1 }, 200);
 });
 
@@ -123,17 +139,33 @@ roomRoutes.openapi(joinRoomRoute, async (c) => {
   const u = getUser(c);
   const { id: roomId } = c.req.valid("param");
   const room = await c.env.DB
-    .prepare("SELECT is_public FROM rooms WHERE id = ?")
+    .prepare("SELECT id, name, is_public FROM rooms WHERE id = ?")
     .bind(roomId)
-    .first<{ is_public: number }>();
+    .first<{ id: string; name: string; is_public: number }>();
   if (!room) return c.json({ error: "not found" }, 404);
   if (room.is_public !== 1) return c.json({ error: "forbidden" }, 403);
-  await c.env.DB
+  const res = await c.env.DB
     .prepare(
       "INSERT OR IGNORE INTO memberships (user_id, room_id, role, joined_at) VALUES (?, ?, 'member', ?)",
     )
     .bind(u.id, roomId, Date.now())
     .run();
+  if ((res.meta.changes ?? 0) > 0) {
+    c.executionCtx.waitUntil(
+      notifyUser(c.env, u.id, {
+        type: "room_added",
+        room: {
+          id: room.id,
+          name: room.name,
+          is_public: room.is_public === 1,
+          is_member: true,
+          role: "member",
+          muted: false,
+          unread: 0,
+        },
+      }),
+    );
+  }
   return c.json({ ok: true }, 200);
 });
 
@@ -165,6 +197,9 @@ roomRoutes.openapi(leaveRoomRoute, async (c) => {
     .prepare("DELETE FROM memberships WHERE user_id = ? AND room_id = ?")
     .bind(u.id, roomId)
     .run();
+  c.executionCtx.waitUntil(
+    notifyUser(c.env, u.id, { type: "room_removed", room_id: roomId }),
+  );
   return c.body(null, 204);
 });
 
@@ -323,6 +358,29 @@ roomRoutes.openapi(createInviteRoute, async (c) => {
   } catch {
     return c.json({ error: "already invited" }, 409);
   }
+  // Уведомим приглашённого.
+  const roomRow = await c.env.DB
+    .prepare("SELECT name FROM rooms WHERE id = ?")
+    .bind(roomId)
+    .first<{ name: string }>();
+  const inviterRow = await c.env.DB
+    .prepare("SELECT username, display_name FROM users WHERE id = ?")
+    .bind(u.id)
+    .first<{ username: string; display_name: string | null }>();
+  c.executionCtx.waitUntil(
+    notifyUser(c.env, inviteeId, {
+      type: "invite_received",
+      invite: {
+        id,
+        room_id: roomId,
+        room_name: roomRow?.name ?? "",
+        inviter_id: u.id,
+        inviter_username: inviterRow?.username ?? "",
+        inviter_display_name: inviterRow?.display_name ?? null,
+        created_at: now,
+      },
+    }),
+  );
   return c.json(
     { id, room_id: roomId, invitee_user_id: inviteeId, status: "pending", created_at: now } as never,
     200,
@@ -398,6 +456,26 @@ roomRoutes.openapi(acceptInviteRoute, async (c) => {
     .prepare("UPDATE invites SET status = 'accepted', responded_at = ? WHERE id = ?")
     .bind(now, id)
     .run();
+  const room = await c.env.DB
+    .prepare("SELECT id, name, is_public FROM rooms WHERE id = ?")
+    .bind(inv.room_id)
+    .first<{ id: string; name: string; is_public: number }>();
+  c.executionCtx.waitUntil(
+    notifyUser(c.env, u.id, {
+      type: "room_added",
+      room: room
+        ? {
+            id: room.id,
+            name: room.name,
+            is_public: room.is_public === 1,
+            is_member: true,
+            role: "member",
+            muted: false,
+            unread: 0,
+          }
+        : { id: inv.room_id, name: "", is_public: false, is_member: true, role: "member", muted: false, unread: 0 },
+    }),
+  );
   return c.json({ ok: true, room_id: inv.room_id } as never, 200);
 });
 
@@ -447,6 +525,13 @@ roomRoutes.openapi(revokeInviteRoute, async (c) => {
   const u = getUser(c);
   const { id } = c.req.valid("param");
   const now = Date.now();
+  // Сначала достанем invitee, чтобы уведомить его об отзыве.
+  const inv = await c.env.DB
+    .prepare(
+      "SELECT invitee_user_id FROM invites WHERE id = ? AND inviter_user_id = ? AND status = 'pending'",
+    )
+    .bind(id, u.id)
+    .first<{ invitee_user_id: string }>();
   const res = await c.env.DB
     .prepare(
       "UPDATE invites SET status = 'revoked', responded_at = ? WHERE id = ? AND inviter_user_id = ? AND status = 'pending'",
@@ -454,5 +539,10 @@ roomRoutes.openapi(revokeInviteRoute, async (c) => {
     .bind(now, id, u.id)
     .run();
   if ((res.meta.changes ?? 0) === 0) return c.json({ error: "not found" }, 404);
+  if (inv?.invitee_user_id) {
+    c.executionCtx.waitUntil(
+      notifyUser(c.env, inv.invitee_user_id, { type: "invite_revoked", id }),
+    );
+  }
   return c.body(null, 204);
 });

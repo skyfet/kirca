@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../api.dart';
 import '../state.dart';
+import '../storage/cache.dart';
+import '../theme/app_background.dart';
+import '../theme/app_theme.dart';
+import '../ws/user_ws.dart';
 import 'chat.dart';
 import 'invites.dart';
 import 'profile.dart';
@@ -14,174 +19,367 @@ class RoomsScreen extends ConsumerStatefulWidget {
 }
 
 class _RoomsScreenState extends ConsumerState<RoomsScreen> {
-  List<dynamic> _rooms = [];
-  int _invitesCount = 0;
-  bool _loading = true;
-  String? _err;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-    setState(() { _loading = true; _err = null; });
-    try {
-      final api = Api(token: auth.token);
-      final list = await api.rooms();
-      // Параллельно подгрузим число пришедших приглашений — для бейджа.
-      api.invites().then((inv) {
-        if (!mounted) return;
-        setState(() => _invitesCount = inv.length);
-      }).catchError((_) {});
-      setState(() { _rooms = list; _loading = false; });
-    } on ApiException catch (e) {
-      if (e.status == 401) return;
-      setState(() { _err = e.message; _loading = false; });
-    } catch (_) {
-      setState(() { _err = 'Не удалось подключиться'; _loading = false; });
-    }
-  }
+  String _query = '';
 
   Future<void> _newRoom() async {
     final ctrl = TextEditingController();
     bool isPublic = true;
     final ok = await showDialog<bool>(
       context: context,
+      barrierColor: Colors.black54,
       builder: (_) => StatefulBuilder(
-        builder: (ctx, setLocal) => AlertDialog(
-          title: const Text('Новая комната'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(controller: ctrl, autofocus: true, decoration: const InputDecoration(hintText: 'Название')),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Публичная'),
-                subtitle: const Text('Видна всем; в приватную пускают по приглашению'),
-                value: isPublic,
-                onChanged: (v) => setLocal(() => isPublic = v),
+        builder: (ctx, setLocal) => Dialog(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 320),
+            child: GlassCard(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Новая комната',
+                    style: TextStyle(
+                      color: AppColors.onGlass,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  GlassTextField(
+                    controller: ctrl,
+                    placeholder: 'Название',
+                    autofocus: true,
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          isPublic
+                              ? 'Публичная — видна всем'
+                              : 'Приватная — по приглашению',
+                          style: const TextStyle(color: AppColors.onGlassMuted, fontSize: 12),
+                        ),
+                      ),
+                      GlassSwitch(
+                        value: isPublic,
+                        onChanged: (v) => setLocal(() => isPublic = v),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: GlassButton.custom(
+                          onTap: () => Navigator.pop(ctx, false),
+                          height: 42,
+                          width: double.infinity,
+                          child: const Center(
+                            child: Text(
+                              'Отмена',
+                              style: TextStyle(color: AppColors.onGlass),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: GlassButton.custom(
+                          onTap: () => Navigator.pop(ctx, true),
+                          glowColor: AppColors.accent,
+                          height: 42,
+                          width: double.infinity,
+                          child: const Center(
+                            child: Text(
+                              'Создать',
+                              style: TextStyle(
+                                color: AppColors.onGlass,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Создать')),
-          ],
         ),
       ),
     );
     if (ok == true && ctrl.text.trim().isNotEmpty) {
+      final auth = ref.read(authProvider);
+      if (auth == null) return;
       try {
-        await Api(token: ref.read(authProvider)!.token)
+        final r = await Api(token: auth.token)
             .createRoom(ctrl.text.trim(), isPublic: isPublic);
-        _load();
-      } catch (_) {}
+        await RoomsCache.upsert({...r, 'is_member': true, 'role': 'owner'});
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        }
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Комнаты · ${auth?.username ?? ""}'),
-        actions: [
-          IconButton(
-            tooltip: 'Приглашения',
-            icon: _invitesCount > 0
-                ? Badge(label: Text('$_invitesCount'), child: const Icon(Icons.mail_outline))
-                : const Icon(Icons.mail_outline),
-            onPressed: () async {
-              await Navigator.push(
+    final roomsAsync = ref.watch(roomsProvider);
+    final invitesAsync = ref.watch(invitesProvider);
+    final invitesCount = invitesAsync.valueOrNull?.length ?? 0;
+    final connected = ref.watch(userWsConnectedProvider).valueOrNull ?? false;
+
+    return GlassPage(
+      background: const AppBackground(),
+      statusBarStyle: GlassStatusBarStyle.light,
+      edgeToEdge: true,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        extendBodyBehindAppBar: true,
+        extendBody: true,
+        appBar: GlassAppBar(
+          centerTitle: false,
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Комнаты',
+                style: TextStyle(
+                  color: AppColors.onGlass,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(width: 8),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: connected ? const Color(0xFF34D399) : const Color(0xFFFF8A65),
+                  boxShadow: connected
+                      ? [
+                          BoxShadow(
+                            color: const Color(0xFF34D399).withOpacity(0.6),
+                            blurRadius: 6,
+                          ),
+                        ]
+                      : null,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            GlassIconButton(
+              size: 36,
+              icon: invitesCount > 0
+                  ? GlassBadge(
+                      count: invitesCount,
+                      backgroundColor: AppColors.accent,
+                      child: const Icon(Icons.mail_outline, color: AppColors.onGlass),
+                    )
+                  : const Icon(Icons.mail_outline, color: AppColors.onGlass),
+              onPressed: () => Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const InvitesScreen()),
-              );
-              _load();
-            },
+              ),
+            ),
+            const SizedBox(width: 4),
+            GlassIconButton(
+              size: 36,
+              icon: const Icon(Icons.account_circle_outlined, color: AppColors.onGlass),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ProfileScreen()),
+              ),
+            ),
+            const SizedBox(width: 4),
+            GlassIconButton(
+              size: 36,
+              icon: const Icon(Icons.logout, color: AppColors.onGlass),
+              onPressed: () => ref.read(authProvider.notifier).logout(),
+            ),
+            const SizedBox(width: 8),
+          ],
+        ),
+        floatingActionButton: GlassButton(
+          icon: const Icon(Icons.add, color: AppColors.onGlass),
+          onTap: _newRoom,
+          width: 56,
+          height: 56,
+          glowColor: AppColors.accent,
+        ),
+        body: SafeArea(
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                child: GlassSearchBar(
+                  placeholder: 'Поиск по комнатам',
+                  onChanged: (v) => setState(() => _query = v.trim().toLowerCase()),
+                ),
+              ),
+              if (auth != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '@${auth.username}',
+                      style: const TextStyle(color: AppColors.onGlassDim, fontSize: 12),
+                    ),
+                  ),
+                ),
+              Expanded(child: _body(roomsAsync)),
+            ],
           ),
-          IconButton(
-            tooltip: 'Профиль',
-            icon: const Icon(Icons.account_circle_outlined),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ProfileScreen()),
+        ),
+      ),
+    );
+  }
+
+  Widget _body(AsyncValue<List<CachedRoom>> roomsAsync) {
+    return roomsAsync.when(
+      loading: () => const Center(child: GlassProgressIndicator.circular(size: 28)),
+      error: (e, _) => Center(
+        child: Text('$e', style: const TextStyle(color: AppColors.danger)),
+      ),
+      data: (rooms) {
+        final filtered = _query.isEmpty
+            ? rooms
+            : rooms
+                .where((r) => r.name.toLowerCase().contains(_query))
+                .toList(growable: false);
+        if (filtered.isEmpty) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Text(
+                _query.isEmpty
+                    ? 'Пока ни одной комнаты.\nНажми + чтобы создать.'
+                    : 'Ничего не нашлось.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: AppColors.onGlassMuted),
+              ),
+            ),
+          );
+        }
+        return ListView.builder(
+          padding: const EdgeInsets.fromLTRB(10, 4, 10, 90),
+          itemCount: filtered.length,
+          itemBuilder: (_, i) => Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: _RoomTile(room: filtered[i]),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _RoomTile extends ConsumerWidget {
+  final CachedRoom room;
+  const _RoomTile({required this.room});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return GlassCard(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: InkWell(
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ChatScreen(
+              roomId: room.id,
+              roomName: room.name,
+              isPublic: room.isPublic,
+              muted: room.muted,
             ),
           ),
-          IconButton(
-            tooltip: 'Выйти',
-            icon: const Icon(Icons.logout),
-            onPressed: () => ref.read(authProvider.notifier).logout(),
-          ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _newRoom,
-        child: const Icon(Icons.add),
-      ),
-      body: RefreshIndicator(
-        onRefresh: _load,
-        child: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : _err != null
-                ? ListView(children: [
-                    const SizedBox(height: 60),
-                    Center(child: Text(_err!, style: const TextStyle(color: Colors.red))),
-                    TextButton(onPressed: _load, child: const Text('Повторить')),
-                  ])
-                : _rooms.isEmpty
-                    ? ListView(children: const [
-                        SizedBox(height: 80),
-                        Center(child: Text('Пока ни одной комнаты.\nНажми + чтобы создать.', textAlign: TextAlign.center)),
-                      ])
-                    : ListView.separated(
-                        itemCount: _rooms.length,
-                        separatorBuilder: (_, __) => const Divider(height: 1),
-                        itemBuilder: (_, i) {
-                          final r = _rooms[i] as Map<String, dynamic>;
-                          final isPublic = (r['is_public'] as num?)?.toInt() == 1
-                              || r['is_public'] == true;
-                          final unread = (r['unread'] as num?)?.toInt() ?? 0;
-                          final muted = (r['muted'] as num?)?.toInt() == 1
-                              || r['muted'] == true;
-                          return ListTile(
-                            leading: Icon(isPublic ? Icons.public : Icons.lock_outline),
-                            title: Row(
-                              children: [
-                                Expanded(child: Text(r['name']?.toString() ?? '')),
-                                if (muted)
-                                  const Padding(
-                                    padding: EdgeInsets.symmetric(horizontal: 4),
-                                    child: Icon(Icons.notifications_off, size: 16, color: Colors.black45),
-                                  ),
-                              ],
-                            ),
-                            trailing: unread > 0
-                                ? Badge(
-                                    backgroundColor: muted ? Colors.grey : Colors.indigo,
-                                    label: Text('$unread'),
-                                  )
-                                : null,
-                            onTap: () async {
-                              await Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => ChatScreen(
-                                    roomId: r['id'].toString(),
-                                    roomName: r['name'].toString(),
-                                    isPublic: isPublic,
-                                    muted: muted,
-                                  ),
-                                ),
-                              );
-                              _load();
-                            },
-                          );
-                        },
+        ),
+        borderRadius: BorderRadius.circular(14),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 22,
+              backgroundColor: room.isPublic
+                  ? AppColors.blobIndigo.withOpacity(0.55)
+                  : AppColors.blobViolet.withOpacity(0.55),
+              child: Icon(
+                room.isPublic ? Icons.public : Icons.lock_outline,
+                color: AppColors.onGlass,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          room.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppColors.onGlass,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
+                      if (room.muted)
+                        const Padding(
+                          padding: EdgeInsets.only(left: 6),
+                          child: Icon(Icons.notifications_off,
+                              size: 14, color: AppColors.onGlassDim),
+                        ),
+                    ],
+                  ),
+                  if ((room.lastText ?? '').isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        room.lastText!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: AppColors.onGlassDim, fontSize: 12),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (room.unread > 0) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: room.muted ? const Color(0x33FFFFFF) : AppColors.accent,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '${room.unread}',
+                  style: const TextStyle(
+                    color: AppColors.onGlass,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

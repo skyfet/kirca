@@ -61,3 +61,54 @@ wsRoutes.openapi(wsRoute, async (c) => {
 
   return stub.fetch(url.toString(), c.req.raw);
 });
+
+// ---- global per-user WS ----------------------------------------------------
+
+const userWsRoute = createRoute({
+  method: "get",
+  path: "/v1/ws",
+  tags: ["realtime"],
+  summary: "Global per-user WebSocket",
+  description:
+    "Open with `Upgrade: websocket`. Auth via `?token=<sessionToken>`.\n\n" +
+    "Один WS-канал на пользователя со всех устройств. Сюда приходят события,\n" +
+    "которые касаются юзера, но не привязаны к конкретно открытой комнате —\n" +
+    "чтобы список комнат, инвайтов и неprочитанных обновлялся в фоне.\n\n" +
+    "**Server → client**\n" +
+    "- `{type:'hello'}` — соединение принято.\n" +
+    "- `{type:'new_message', room_id, room_name, message}` — новое сообщение в любой видимой пользователю комнате.\n" +
+    "- `{type:'message_edited', room_id, id, text, edited_at}`\n" +
+    "- `{type:'message_deleted', room_id, id, deleted_at}`\n" +
+    "- `{type:'read_self', room_id, last_read_at}` — мульти-девайс sync счётчика unread.\n" +
+    "- `{type:'room_added', room}` — после createRoom / joinRoom / acceptInvite.\n" +
+    "- `{type:'room_removed', room_id}` — после leaveRoom.\n" +
+    "- `{type:'invite_received', invite}` — кто-то пригласил.\n" +
+    "- `{type:'invite_revoked', id}` — приглашающий отозвал.\n\n" +
+    "Канал односторонний; client→server игнорируется. Невалидный токен → close 1008.",
+  security: [],
+  request: {
+    query: z.object({
+      token: z.string().uuid().optional().describe("Session token."),
+    }),
+  },
+  responses: {
+    101: { description: "Switching Protocols — socket open." },
+    426: errorResponse("Missing `Upgrade: websocket`."),
+  },
+});
+
+wsRoutes.openapi(userWsRoute, async (c) => {
+  if (c.req.header("Upgrade") !== "websocket") {
+    return c.json({ error: "expected websocket" }, 426);
+  }
+  const { token } = c.req.valid("query");
+  const user = await authUser(c.env, token);
+  if (!user) return rejectWebSocket(1008, "unauthorized");
+
+  const stub = c.env.USER_HUB.get(c.env.USER_HUB.idFromName(user.id));
+
+  const url = new URL(c.req.url);
+  url.searchParams.set("userId", user.id);
+
+  return stub.fetch(url.toString(), c.req.raw);
+});

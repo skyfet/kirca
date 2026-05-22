@@ -1,4 +1,5 @@
 import { getUser, isRoomAccessible, requireAuth } from "../lib/middleware";
+import { notifyRoomMembers, notifyUser } from "../lib/notify";
 import {
   createApp,
   createRoute,
@@ -214,6 +215,17 @@ messageRoutes.openapi(editMessageRoute, async (c) => {
     });
   } catch { /* DO может быть не поднят */ }
 
+  // Глобальный fan-out — чтобы кэш на других экранах тоже обновился.
+  c.executionCtx.waitUntil(
+    notifyRoomMembers(c.env, roomId, {
+      type: "message_edited",
+      room_id: roomId,
+      id: msgId,
+      text: text.slice(0, 4000),
+      edited_at: now,
+    }),
+  );
+
   return c.json({ ok: true, id: msgId, text, edited_at: now }, 200);
 });
 
@@ -268,6 +280,15 @@ messageRoutes.openapi(deleteMessageRoute, async (c) => {
     });
   } catch { /* */ }
 
+  c.executionCtx.waitUntil(
+    notifyRoomMembers(c.env, roomId, {
+      type: "message_deleted",
+      room_id: roomId,
+      id: msgId,
+      deleted_at: now,
+    }),
+  );
+
   return c.body(null, 204);
 });
 
@@ -314,6 +335,14 @@ messageRoutes.openapi(readRoute, async (c) => {
       }),
     });
   } catch { /* */ }
+  // Мульти-девайс sync: другие устройства этого юзера обнулят unread.
+  c.executionCtx.waitUntil(
+    notifyUser(c.env, u.id, {
+      type: "read_self",
+      room_id: roomId,
+      last_read_at,
+    }),
+  );
   return c.json({ ok: true }, 200);
 });
 
