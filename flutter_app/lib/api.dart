@@ -112,6 +112,170 @@ class Api {
     if (r.statusCode != 204) _decode(r);
   }
 
+  // ---- profile ----
+  Future<Map<String, dynamic>> me() async {
+    final r = await http.get(Uri.parse('${Config.apiBase}/me'), headers: _headers);
+    return _decode(r);
+  }
+
+  Future<Map<String, dynamic>> updateProfile({String? displayName, String? avatarUrl}) async {
+    final body = <String, dynamic>{};
+    if (displayName != null) body['display_name'] = displayName;
+    if (avatarUrl != null) body['avatar_url'] = avatarUrl;
+    final r = await http.patch(
+      Uri.parse('${Config.apiBase}/me'),
+      headers: _headers,
+      body: jsonEncode(body),
+    );
+    return _decode(r);
+  }
+
+  Future<Map<String, dynamic>> uploadAvatar(List<int> bytes, String mime) async {
+    final r = await http.put(
+      Uri.parse('${Config.apiBase}/me/avatar'),
+      headers: {
+        if (token != null) 'Authorization': 'Bearer $token',
+        'Content-Type': mime,
+        'Content-Length': bytes.length.toString(),
+      },
+      body: bytes,
+    );
+    return _decode(r);
+  }
+
+  Future<void> deleteAccount() async {
+    final r = await http.delete(Uri.parse('${Config.apiBase}/me'), headers: _headers);
+    if (r.statusCode != 204) _decode(r);
+  }
+
+  Future<void> logoutAll() async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/logout?all=1'),
+      headers: _headers,
+    );
+    if (r.statusCode != 204 && r.statusCode != 401) _decode(r);
+  }
+
+  // ---- rooms extras ----
+  Future<List<dynamic>> members(String roomId) async {
+    final r = await http.get(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/members'),
+      headers: _headers,
+    );
+    return (_decode(r))['members'] as List<dynamic>;
+  }
+
+  Future<void> setMuted(String roomId, bool muted) async {
+    final r = await http.patch(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/membership'),
+      headers: _headers,
+      body: jsonEncode({'muted': muted}),
+    );
+    _decode(r);
+  }
+
+  Future<void> leaveRoom(String roomId) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/leave'),
+      headers: _headers,
+    );
+    if (r.statusCode != 204) _decode(r);
+  }
+
+  // ---- invites ----
+  Future<Map<String, dynamic>> invite(String roomId, {String? username, String? userId}) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/invites'),
+      headers: _headers,
+      body: jsonEncode({
+        if (username != null) 'username': username,
+        if (userId != null) 'user_id': userId,
+      }),
+    );
+    return _decode(r);
+  }
+
+  Future<List<dynamic>> invites() async {
+    final r = await http.get(Uri.parse('${Config.apiBase}/invites'), headers: _headers);
+    return (_decode(r))['invites'] as List<dynamic>;
+  }
+
+  Future<Map<String, dynamic>> acceptInvite(String id) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/invites/$id/accept'),
+      headers: _headers,
+    );
+    return _decode(r);
+  }
+
+  Future<void> declineInvite(String id) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/invites/$id/decline'),
+      headers: _headers,
+    );
+    _decode(r);
+  }
+
+  // ---- messages: edit / delete / read ----
+  Future<void> editMessage(String roomId, String msgId, String text) async {
+    final r = await http.patch(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/messages/$msgId'),
+      headers: _headers,
+      body: jsonEncode({'text': text}),
+    );
+    _decode(r);
+  }
+
+  Future<void> deleteMessage(String roomId, String msgId) async {
+    final r = await http.delete(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/messages/$msgId'),
+      headers: _headers,
+    );
+    if (r.statusCode != 204) _decode(r);
+  }
+
+  Future<void> markRead(String roomId, int lastReadAt) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/read'),
+      headers: _headers,
+      body: jsonEncode({'last_read_at': lastReadAt}),
+    );
+    _decode(r);
+  }
+
+  // ---- uploads ----
+  Future<Map<String, dynamic>> reserveUpload({
+    required String mime,
+    required int size,
+    int? width,
+    int? height,
+  }) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/uploads'),
+      headers: _headers,
+      body: jsonEncode({
+        'mime': mime,
+        'size': size,
+        if (width != null) 'width': width,
+        if (height != null) 'height': height,
+      }),
+    );
+    return _decode(r);
+  }
+
+  Future<void> uploadBytes(String uploadUrl, List<int> bytes, String mime) async {
+    final r = await http.put(
+      Uri.parse('${Config.apiBase}$uploadUrl'),
+      headers: {
+        if (token != null) 'Authorization': 'Bearer $token',
+        'Content-Type': mime,
+        'Content-Length': bytes.length.toString(),
+      },
+      body: bytes,
+    );
+    _decode(r);
+  }
+
   Map<String, dynamic> _decode(http.Response r) {
     Map<String, dynamic> body;
     try {
