@@ -76,6 +76,7 @@ class UserWs {
   }
 
   void _onMessage(dynamic raw) {
+    if (_disposed) return;
     _attempt = 0;
     if (raw is! String) return;
     Map<String, dynamic> m;

@@ -53,12 +53,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
       final p = await Api(token: auth.token).updateProfile(
         displayName: _displayCtrl.text.trim().isEmpty ? null : _displayCtrl.text.trim(),
       );
+      if (!mounted) return;
       setState(() => _profile = p);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Сохранено')),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Сохранено')),
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
@@ -77,6 +76,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     final bytes = await File(picked.path).readAsBytes();
     final mime = _mimeFromPath(picked.path);
     if (mime == null) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Неподдерживаемый формат')),
       );
@@ -84,6 +84,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     }
     try {
       final r = await Api(token: auth.token).uploadAvatar(bytes, mime);
+      if (!mounted) return;
       setState(() {
         if (_profile != null) {
           _profile = {..._profile!, 'avatar_url': r['avatar_url']};

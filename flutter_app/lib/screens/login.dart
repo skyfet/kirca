@@ -48,9 +48,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             ),
           );
     } on ApiException catch (e) {
-      setState(() => _err = e.message);
+      if (mounted) setState(() => _err = e.message);
     } catch (_) {
-      setState(() => _err = 'Не удалось подключиться к серверу');
+      if (mounted) setState(() => _err = 'Не удалось подключиться к серверу');
     } finally {
       if (mounted) setState(() => _busy = false);
     }

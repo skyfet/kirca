@@ -504,6 +504,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     try {
       await Api(token: auth.token).setMuted(widget.roomId, next);
     } catch (_) {
+      if (!mounted) return;
       setState(() => _muted = !next);
       await RoomsCache.setMuted(widget.roomId, !next);
     }
