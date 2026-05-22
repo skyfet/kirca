@@ -53,7 +53,9 @@ class _InvitesScreenState extends ConsumerState<InvitesScreen> {
       background: const AppBackground(),
       statusBarStyle: GlassStatusBarStyle.light,
       edgeToEdge: true,
-      child: Scaffold(
+      child: AdaptiveLiquidGlassLayer(
+        clipBehavior: Clip.none,
+        child: Scaffold(
         backgroundColor: Colors.transparent,
         extendBodyBehindAppBar: true,
         appBar: GlassAppBar(
@@ -95,6 +97,7 @@ class _InvitesScreenState extends ConsumerState<InvitesScreen> {
               );
             },
           ),
+        ),
         ),
       ),
     );

@@ -144,7 +144,9 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
       background: const AppBackground(),
       statusBarStyle: GlassStatusBarStyle.light,
       edgeToEdge: true,
-      child: Scaffold(
+      child: AdaptiveLiquidGlassLayer(
+        clipBehavior: Clip.none,
+        child: Scaffold(
         backgroundColor: Colors.transparent,
         extendBodyBehindAppBar: true,
         extendBody: true,
@@ -246,6 +248,7 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
               Expanded(child: _body(roomsAsync)),
             ],
           ),
+        ),
         ),
       ),
     );

@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
@@ -6,6 +9,25 @@ import 'package:kirca/screens/rooms.dart';
 import 'package:kirca/storage/cache.dart';
 import 'package:kirca/theme/app_background.dart';
 import 'package:kirca/theme/app_theme.dart';
+
+Future<void> _loadFont(String family, List<String> files) async {
+  final loader = FontLoader(family);
+  for (final path in files) {
+    final bytes = File(path).readAsBytesSync();
+    loader.addFont(Future.value(ByteData.view(bytes.buffer)));
+  }
+  await loader.load();
+}
+
+Future<void> _setupFonts() async {
+  await _loadFont('Roboto', [
+    'test/fonts/Roboto-Regular.ttf',
+    'test/fonts/Roboto-Medium.ttf',
+    'test/fonts/Roboto-Bold.ttf',
+  ]);
+  await _loadFont(
+      'MaterialIcons', ['test/fonts/MaterialIcons-Regular.otf']);
+}
 
 CachedRoom _room({
   String name = 'Комната',
@@ -28,7 +50,9 @@ CachedRoom _room({
 Widget _harness({required Widget child, Size size = const Size(360, 96)}) {
   return MaterialApp(
     debugShowCheckedModeBanner: false,
-    theme: buildAppTheme(),
+    theme: buildAppTheme().copyWith(
+      textTheme: buildAppTheme().textTheme.apply(fontFamily: 'Roboto'),
+    ),
     home: Scaffold(
       backgroundColor: Colors.transparent,
       body: Stack(
@@ -70,9 +94,13 @@ Widget _tile(CachedRoom room) {
 }
 
 void main() {
+  setUpAll(() async {
+    await _setupFonts();
+  });
+
   testWidgets('room tile · public, no unread', (tester) async {
     await tester.pumpWidget(_harness(
-      child: _tile(_room(name: 'comet', lastText: 'hi')),
+      child: _tile(_room(name: 'комета Маришки', lastText: 'привет!')),
     ));
     await tester.pumpAndSettle();
     await expectLater(
@@ -84,10 +112,10 @@ void main() {
   testWidgets('room tile · private + unread', (tester) async {
     await tester.pumpWidget(_harness(
       child: _tile(_room(
-        name: 'private room',
+        name: 'комната Маришки',
         isPublic: false,
         unread: 7,
-        lastText: 'new msgs',
+        lastText: 'новые сообщения',
       )),
     ));
     await tester.pumpAndSettle();
@@ -100,10 +128,10 @@ void main() {
   testWidgets('room tile · muted + unread', (tester) async {
     await tester.pumpWidget(_harness(
       child: _tile(_room(
-        name: 'muted room',
+        name: 'e2e-1779263047785',
         muted: true,
         unread: 12,
-        lastText: 'last',
+        lastText: 'последнее сообщение',
       )),
     ));
     await tester.pumpAndSettle();
@@ -126,7 +154,7 @@ void main() {
               useOwnLayer: true,
               shape: LiquidRoundedSuperellipse(borderRadius: 12),
               child: const Center(
-                child: Text('cancel', style: TextStyle(color: AppColors.onGlass)),
+                child: Text('Отмена', style: TextStyle(color: AppColors.onGlass)),
               ),
             ),
           ),
@@ -140,7 +168,7 @@ void main() {
               useOwnLayer: true,
               shape: LiquidRoundedSuperellipse(borderRadius: 12),
               child: const Center(
-                child: Text('create',
+                child: Text('Создать',
                     style: TextStyle(
                         color: AppColors.onGlass, fontWeight: FontWeight.w600)),
               ),

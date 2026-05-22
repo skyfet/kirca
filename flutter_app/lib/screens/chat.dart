@@ -580,7 +580,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       background: const AppBackground(),
       statusBarStyle: GlassStatusBarStyle.light,
       edgeToEdge: true,
-      child: Scaffold(
+      child: AdaptiveLiquidGlassLayer(
+        clipBehavior: Clip.none,
+        child: Scaffold(
         backgroundColor: Colors.transparent,
         extendBodyBehindAppBar: true,
         extendBody: true,
@@ -699,6 +701,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               ),
             ),
           ],
+        ),
         ),
       ),
     );
