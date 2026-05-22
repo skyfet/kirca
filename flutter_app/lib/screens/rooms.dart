@@ -229,7 +229,7 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
               ),
               if (auth != null)
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
@@ -273,7 +273,7 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
           );
         }
         return ListView.builder(
-          padding: const EdgeInsets.fromLTRB(10, 4, 10, 90),
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
           itemCount: filtered.length,
           itemBuilder: (_, i) => Padding(
             padding: const EdgeInsets.only(bottom: 8),
@@ -348,7 +348,7 @@ class _RoomTile extends ConsumerWidget {
                   ),
                   if ((room.lastText ?? '').isNotEmpty)
                     Padding(
-                      padding: const EdgeInsets.only(top: 2),
+                      padding: const EdgeInsets.only(top: 4),
                       child: Text(
                         room.lastText!,
                         maxLines: 1,

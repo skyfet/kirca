@@ -74,7 +74,7 @@ class _InvitesScreenState extends ConsumerState<InvitesScreen> {
                 );
               }
               return ListView.builder(
-                padding: const EdgeInsets.fromLTRB(10, 4, 10, 24),
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
                 itemCount: items.length,
                 itemBuilder: (_, i) => Padding(
                   padding: const EdgeInsets.only(bottom: 8),
@@ -105,7 +105,7 @@ class _InviteCard extends StatelessWidget {
         ? invite.inviterDisplayName!
         : (invite.inviterUsername ?? '?');
     return GlassCard(
-      padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       child: Row(
         children: [
           const CircleAvatar(

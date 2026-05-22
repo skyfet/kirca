@@ -161,7 +161,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           child: _profile == null
               ? const Center(child: GlassProgressIndicator.circular(size: 28))
               : ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                   children: [
                     Center(
                       child: GestureDetector(
@@ -198,7 +198,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                         ),
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 12),
                     Center(
                       child: TextButton.icon(
                         onPressed: _pickAvatar,
@@ -207,7 +207,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             style: TextStyle(color: AppColors.onGlassMuted)),
                       ),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 6),
                     Center(
                       child: Text(
                         '@${auth?.username ?? ""}',
@@ -220,13 +220,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 8, left: 2),
-                            child: Text(
-                              'Имя для отображения',
-                              style: TextStyle(color: AppColors.onGlassMuted, fontSize: 12),
-                            ),
+                          const Text(
+                            'Имя для отображения',
+                            style: TextStyle(color: AppColors.onGlassMuted, fontSize: 12),
                           ),
+                          const SizedBox(height: 8),
                           GlassTextField(
                             controller: _displayCtrl,
                             placeholder: 'Как тебя называть',

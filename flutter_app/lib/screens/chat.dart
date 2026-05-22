@@ -634,14 +634,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             Expanded(
               child: ListView.builder(
                 controller: _scroll,
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+                padding: const EdgeInsets.fromLTRB(12, 16, 12, 8),
                 itemCount: allItems.length,
                 itemBuilder: (_, i) => _bubble(allItems[i], me),
               ),
             ),
             if (_peerTyping.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
                 child: Align(
                   alignment: Alignment.centerLeft,
                   child: GlassChip(

@@ -142,10 +142,10 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
                 );
               }
               return ListView.builder(
-                padding: const EdgeInsets.fromLTRB(10, 4, 10, 24),
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
                 itemCount: members.length,
                 itemBuilder: (_, i) => Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.only(bottom: 8),
                   child: _MemberTile(member: members[i]),
                 ),
               );
@@ -166,7 +166,7 @@ class _MemberTile extends StatelessWidget {
     final dn = (member.displayName ?? '').trim();
     final un = member.username;
     return GlassCard(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       child: Row(
         children: [
           Stack(
