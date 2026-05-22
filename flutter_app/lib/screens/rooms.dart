@@ -301,7 +301,7 @@ class _RoomTile extends ConsumerWidget {
       children: [
         GlassCard(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: _RoomTileContent(room: room),
+          child: RoomTileContent(room: room),
         ),
         Positioned.fill(
           child: Material(
@@ -332,9 +332,9 @@ class _RoomTile extends ConsumerWidget {
   }
 }
 
-class _RoomTileContent extends StatelessWidget {
+class RoomTileContent extends StatelessWidget {
   final CachedRoom room;
-  const _RoomTileContent({required this.room});
+  const RoomTileContent({super.key, required this.room});
 
   @override
   Widget build(BuildContext context) {
