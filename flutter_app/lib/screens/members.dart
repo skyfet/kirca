@@ -117,6 +117,14 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
         backgroundColor: Colors.transparent,
         extendBodyBehindAppBar: true,
         appBar: GlassAppBar(
+          leading: Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: GlassIconButton(
+              size: 36,
+              icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.onGlass, size: 18),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ),
           title: Text(
             'Участники · ${widget.roomName}',
             style: const TextStyle(color: AppColors.onGlass, fontSize: 16, fontWeight: FontWeight.w600),
@@ -142,10 +150,10 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
                 );
               }
               return ListView.builder(
-                padding: const EdgeInsets.fromLTRB(10, 4, 10, 24),
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
                 itemCount: members.length,
                 itemBuilder: (_, i) => Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.only(bottom: 8),
                   child: _MemberTile(member: members[i]),
                 ),
               );
@@ -166,7 +174,7 @@ class _MemberTile extends StatelessWidget {
     final dn = (member.displayName ?? '').trim();
     final un = member.username;
     return GlassCard(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       child: Row(
         children: [
           Stack(

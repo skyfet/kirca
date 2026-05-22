@@ -53,12 +53,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
       final p = await Api(token: auth.token).updateProfile(
         displayName: _displayCtrl.text.trim().isEmpty ? null : _displayCtrl.text.trim(),
       );
+      if (!mounted) return;
       setState(() => _profile = p);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Сохранено')),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Сохранено')),
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
@@ -77,6 +76,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     final bytes = await File(picked.path).readAsBytes();
     final mime = _mimeFromPath(picked.path);
     if (mime == null) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Неподдерживаемый формат')),
       );
@@ -84,6 +84,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     }
     try {
       final r = await Api(token: auth.token).uploadAvatar(bytes, mime);
+      if (!mounted) return;
       setState(() {
         if (_profile != null) {
           _profile = {..._profile!, 'avatar_url': r['avatar_url']};
@@ -152,6 +153,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         backgroundColor: Colors.transparent,
         extendBodyBehindAppBar: true,
         appBar: GlassAppBar(
+          leading: Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: GlassIconButton(
+              size: 36,
+              icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.onGlass, size: 18),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ),
           title: const Text(
             'Профиль',
             style: TextStyle(color: AppColors.onGlass, fontSize: 17, fontWeight: FontWeight.w600),
@@ -161,7 +170,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           child: _profile == null
               ? const Center(child: GlassProgressIndicator.circular(size: 28))
               : ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                   children: [
                     Center(
                       child: GestureDetector(
@@ -198,7 +207,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                         ),
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 12),
                     Center(
                       child: TextButton.icon(
                         onPressed: _pickAvatar,
@@ -207,7 +216,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             style: TextStyle(color: AppColors.onGlassMuted)),
                       ),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 6),
                     Center(
                       child: Text(
                         '@${auth?.username ?? ""}',
@@ -220,13 +229,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 8, left: 2),
-                            child: Text(
-                              'Имя для отображения',
-                              style: TextStyle(color: AppColors.onGlassMuted, fontSize: 12),
-                            ),
+                          const Text(
+                            'Имя для отображения',
+                            style: TextStyle(color: AppColors.onGlassMuted, fontSize: 12),
                           ),
+                          const SizedBox(height: 8),
                           GlassTextField(
                             controller: _displayCtrl,
                             placeholder: 'Как тебя называть',

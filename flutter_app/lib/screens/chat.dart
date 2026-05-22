@@ -504,6 +504,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     try {
       await Api(token: auth.token).setMuted(widget.roomId, next);
     } catch (_) {
+      if (!mounted) return;
       setState(() => _muted = !next);
       await RoomsCache.setMuted(widget.roomId, !next);
     }
@@ -584,6 +585,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         extendBodyBehindAppBar: true,
         extendBody: true,
         appBar: GlassAppBar(
+          leading: Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: GlassIconButton(
+              size: 36,
+              icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.onGlass, size: 18),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ),
           title: Text(
             widget.roomName,
             style: const TextStyle(
@@ -634,14 +643,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             Expanded(
               child: ListView.builder(
                 controller: _scroll,
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+                padding: const EdgeInsets.fromLTRB(12, 16, 12, 8),
                 itemCount: allItems.length,
                 itemBuilder: (_, i) => _bubble(allItems[i], me),
               ),
             ),
             if (_peerTyping.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
                 child: Align(
                   alignment: Alignment.centerLeft,
                   child: GlassChip(

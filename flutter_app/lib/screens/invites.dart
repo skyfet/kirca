@@ -57,6 +57,14 @@ class _InvitesScreenState extends ConsumerState<InvitesScreen> {
         backgroundColor: Colors.transparent,
         extendBodyBehindAppBar: true,
         appBar: GlassAppBar(
+          leading: Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: GlassIconButton(
+              size: 36,
+              icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.onGlass, size: 18),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ),
           title: const Text(
             'Приглашения',
             style: TextStyle(color: AppColors.onGlass, fontSize: 17, fontWeight: FontWeight.w600),
@@ -74,7 +82,7 @@ class _InvitesScreenState extends ConsumerState<InvitesScreen> {
                 );
               }
               return ListView.builder(
-                padding: const EdgeInsets.fromLTRB(10, 4, 10, 24),
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
                 itemCount: items.length,
                 itemBuilder: (_, i) => Padding(
                   padding: const EdgeInsets.only(bottom: 8),
@@ -105,7 +113,7 @@ class _InviteCard extends StatelessWidget {
         ? invite.inviterDisplayName!
         : (invite.inviterUsername ?? '?');
     return GlassCard(
-      padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       child: Row(
         children: [
           const CircleAvatar(
