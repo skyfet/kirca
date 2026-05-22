@@ -153,6 +153,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         backgroundColor: Colors.transparent,
         extendBodyBehindAppBar: true,
         appBar: GlassAppBar(
+          leading: Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: GlassIconButton(
+              size: 36,
+              icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.onGlass, size: 18),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ),
           title: const Text(
             'Профиль',
             style: TextStyle(color: AppColors.onGlass, fontSize: 17, fontWeight: FontWeight.w600),
