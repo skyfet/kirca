@@ -63,6 +63,8 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
                         onTap: () => Navigator.pop(ctx, false),
                         height: 42,
                         width: double.infinity,
+                        useOwnLayer: true,
+                        shape: LiquidRoundedSuperellipse(borderRadius: 12),
                         child: const Center(child: Text('Отмена', style: TextStyle(color: AppColors.onGlass))),
                       ),
                     ),
@@ -73,6 +75,8 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
                         glowColor: AppColors.accent,
                         height: 42,
                         width: double.infinity,
+                        useOwnLayer: true,
+                        shape: LiquidRoundedSuperellipse(borderRadius: 12),
                         child: const Center(
                           child: Text('Пригласить',
                               style: TextStyle(color: AppColors.onGlass, fontWeight: FontWeight.w600)),

@@ -124,6 +124,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       onTap: _busy ? () {} : _submit,
                       width: double.infinity,
                       height: 48,
+                      useOwnLayer: true,
+                      shape: LiquidRoundedSuperellipse(borderRadius: 14),
                       child: Center(
                         child: _busy
                             ? const SizedBox(

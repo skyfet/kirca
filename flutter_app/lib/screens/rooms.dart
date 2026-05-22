@@ -78,6 +78,8 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
                           onTap: () => Navigator.pop(ctx, false),
                           height: 42,
                           width: double.infinity,
+                          useOwnLayer: true,
+                          shape: LiquidRoundedSuperellipse(borderRadius: 12),
                           child: const Center(
                             child: Text(
                               'Отмена',
@@ -93,6 +95,8 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
                           glowColor: AppColors.accent,
                           height: 42,
                           width: double.infinity,
+                          useOwnLayer: true,
+                          shape: LiquidRoundedSuperellipse(borderRadius: 12),
                           child: const Center(
                             child: Text(
                               'Создать',
@@ -216,6 +220,7 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
           width: 56,
           height: 56,
           glowColor: AppColors.accent,
+          useOwnLayer: true,
         ),
         body: SafeArea(
           child: Column(
@@ -291,102 +296,121 @@ class _RoomTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return GlassCard(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => ChatScreen(
-                roomId: room.id,
-                roomName: room.name,
-                isPublic: room.isPublic,
-                muted: room.muted,
+    final radius = BorderRadius.circular(14);
+    return Stack(
+      children: [
+        GlassCard(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: _RoomTileContent(room: room),
+        ),
+        Positioned.fill(
+          child: Material(
+            color: Colors.transparent,
+            borderRadius: radius,
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ChatScreen(
+                    roomId: room.id,
+                    roomName: room.name,
+                    isPublic: room.isPublic,
+                    muted: room.muted,
+                  ),
+                ),
               ),
+              borderRadius: radius,
+              splashColor: const Color(0x1FFFFFFF),
+              highlightColor: const Color(0x0FFFFFFF),
+              hoverColor: const Color(0x0AFFFFFF),
             ),
           ),
-          borderRadius: BorderRadius.circular(14),
-          splashColor: const Color(0x1FFFFFFF),
-          highlightColor: const Color(0x0FFFFFFF),
-          hoverColor: const Color(0x0AFFFFFF),
-          child: Row(
+        ),
+      ],
+    );
+  }
+}
+
+class _RoomTileContent extends StatelessWidget {
+  final CachedRoom room;
+  const _RoomTileContent({required this.room});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        CircleAvatar(
+          radius: 22,
+          backgroundColor: room.isPublic
+              ? AppColors.blobIndigo.withOpacity(0.55)
+              : AppColors.blobViolet.withOpacity(0.55),
+          child: Icon(
+            room.isPublic ? Icons.public : Icons.lock_outline,
+            color: AppColors.onGlass,
+            size: 20,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              CircleAvatar(
-                radius: 22,
-                backgroundColor: room.isPublic
-                    ? AppColors.blobIndigo.withOpacity(0.55)
-                    : AppColors.blobViolet.withOpacity(0.55),
-                child: Icon(
-                  room.isPublic ? Icons.public : Icons.lock_outline,
-                  color: AppColors.onGlass,
-                  size: 20,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            room.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: AppColors.onGlass,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        if (room.muted)
-                          const Padding(
-                            padding: EdgeInsets.only(left: 6),
-                            child: Icon(Icons.notifications_off,
-                                size: 14, color: AppColors.onGlassDim),
-                          ),
-                      ],
-                    ),
-                    if ((room.lastText ?? '').isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Text(
-                          room.lastText!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              color: AppColors.onGlassDim, fontSize: 12),
-                        ),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      room.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.onGlass,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
                       ),
-                  ],
-                ),
-              ),
-              if (room.unread > 0) ...[
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: room.muted ? const Color(0x33FFFFFF) : AppColors.accent,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    '${room.unread}',
-                    style: const TextStyle(
-                      color: AppColors.onGlass,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
                     ),
                   ),
+                  if (room.muted)
+                    const Padding(
+                      padding: EdgeInsets.only(left: 6),
+                      child: Icon(Icons.notifications_off,
+                          size: 14, color: AppColors.onGlassDim),
+                    ),
+                ],
+              ),
+              if ((room.lastText ?? '').isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    room.lastText!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: AppColors.onGlassDim, fontSize: 12),
+                  ),
                 ),
-              ],
             ],
           ),
         ),
-      ),
+        if (room.unread > 0) ...[
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: room.muted ? const Color(0x33FFFFFF) : AppColors.accent,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              '${room.unread}',
+              style: const TextStyle(
+                color: AppColors.onGlass,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ],
     );
   }
 }
