@@ -31,7 +31,7 @@ export const deviceBody = z.object({
 });
 
 export const createRoomBody = z.object({
-  name: z.string().min(1).max(80),
+  name: z.string().min(1).max(80).refine((s) => s.trim().length > 0, "name required"),
   is_public: z.boolean().optional(),
 });
 

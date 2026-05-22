@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { zValidator } from "@hono/zod-validator";
+import { validator } from "../lib/validator";
 
 import { getUser, isRoomAccessible, requireAuth, uuid } from "../lib/middleware";
 import { createRoomBody, inviteCreateBody, muteBody } from "../lib/schemas";
@@ -36,7 +36,7 @@ roomRoutes.get("/rooms", requireAuth, async (c) => {
   return c.json({ rooms: results });
 });
 
-roomRoutes.post("/rooms", requireAuth, zValidator("json", createRoomBody), async (c) => {
+roomRoutes.post("/rooms", requireAuth, validator("json", createRoomBody), async (c) => {
   const u = getUser(c);
   const { name, is_public } = c.req.valid("json");
   const isPublic = is_public === false ? 0 : 1;
@@ -129,7 +129,7 @@ roomRoutes.get("/rooms/:id/members", requireAuth, async (c) => {
 });
 
 // ---- per-membership mute ----
-roomRoutes.patch("/rooms/:id/membership", requireAuth, zValidator("json", muteBody), async (c) => {
+roomRoutes.patch("/rooms/:id/membership", requireAuth, validator("json", muteBody), async (c) => {
   const u = getUser(c);
   const roomId = c.req.param("id");
   const { muted } = c.req.valid("json");
@@ -147,7 +147,7 @@ roomRoutes.patch("/rooms/:id/membership", requireAuth, zValidator("json", muteBo
 
 // ---- invites ----
 // Создаёт invite в приватную комнату (member или owner может пригласить).
-roomRoutes.post("/rooms/:id/invites", requireAuth, zValidator("json", inviteCreateBody), async (c) => {
+roomRoutes.post("/rooms/:id/invites", requireAuth, validator("json", inviteCreateBody), async (c) => {
   const u = getUser(c);
   const roomId = c.req.param("id");
   const room = await c.env.DB

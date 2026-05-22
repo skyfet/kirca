@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { zValidator } from "@hono/zod-validator";
+import { validator } from "../lib/validator";
 
 import { getUser, isRoomAccessible, requireAuth } from "../lib/middleware";
 import { messageEditBody, readBody } from "../lib/schemas";
@@ -97,7 +97,7 @@ messageRoutes.get("/rooms/:id/history", requireAuth, async (c) => {
   });
 });
 
-messageRoutes.patch("/rooms/:id/messages/:msgId", requireAuth, zValidator("json", messageEditBody), async (c) => {
+messageRoutes.patch("/rooms/:id/messages/:msgId", requireAuth, validator("json", messageEditBody), async (c) => {
   const u = getUser(c);
   const roomId = c.req.param("id");
   const msgId = c.req.param("msgId");
@@ -178,7 +178,7 @@ messageRoutes.delete("/rooms/:id/messages/:msgId", requireAuth, async (c) => {
 
 // Read receipts: клиент сообщает «прочитал до created_at = X».
 // Заодно дёрнем DO, чтобы расшарить состояние подключённым.
-messageRoutes.post("/rooms/:id/read", requireAuth, zValidator("json", readBody), async (c) => {
+messageRoutes.post("/rooms/:id/read", requireAuth, validator("json", readBody), async (c) => {
   const u = getUser(c);
   const roomId = c.req.param("id");
   if (!(await isRoomAccessible(c.env, roomId, u.id))) {

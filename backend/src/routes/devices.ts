@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { zValidator } from "@hono/zod-validator";
+import { validator } from "../lib/validator";
 
 import { getUser, requireAuth } from "../lib/middleware";
 import { deviceBody } from "../lib/schemas";
@@ -7,7 +7,7 @@ import type { Env, Vars } from "../lib/types";
 
 export const deviceRoutes = new Hono<{ Bindings: Env; Variables: Vars }>();
 
-deviceRoutes.post("/devices", requireAuth, zValidator("json", deviceBody), async (c) => {
+deviceRoutes.post("/devices", requireAuth, validator("json", deviceBody), async (c) => {
   const u = getUser(c);
   const { token, platform } = c.req.valid("json");
   const now = Date.now();

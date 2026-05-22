@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { zValidator } from "@hono/zod-validator";
+import { validator } from "../lib/validator";
 
 import { hashPassword, verifyPassword } from "../lib/auth";
 import { checkRateLimit, clientIp } from "../lib/rate_limit";
@@ -17,7 +17,7 @@ const RL_WINDOW_MS = 60 * 60 * 1000;
 
 export const authRoutes = new Hono<{ Bindings: Env; Variables: Vars }>();
 
-authRoutes.post("/register", zValidator("json", registerBody), async (c) => {
+authRoutes.post("/register", validator("json", registerBody), async (c) => {
   const ip = clientIp(c.req.raw.headers);
   const rl = await checkRateLimit(c.env.DB, `register:${ip}`, RL_REG_LIMIT, RL_WINDOW_MS);
   if (!rl.allowed) {
@@ -44,7 +44,7 @@ authRoutes.post("/register", zValidator("json", registerBody), async (c) => {
   return c.json({ token, user: { id, username } });
 });
 
-authRoutes.post("/login", zValidator("json", loginBody), async (c) => {
+authRoutes.post("/login", validator("json", loginBody), async (c) => {
   const ip = clientIp(c.req.raw.headers);
   const rl = await checkRateLimit(c.env.DB, `login:${ip}`, RL_LOGIN_LIMIT, RL_WINDOW_MS);
   if (!rl.allowed) {
@@ -88,7 +88,7 @@ authRoutes.post("/logout", async (c) => {
   return new Response(null, { status: 204 });
 });
 
-authRoutes.post("/change-password", requireAuth, zValidator("json", changePasswordBody), async (c) => {
+authRoutes.post("/change-password", requireAuth, validator("json", changePasswordBody), async (c) => {
   const u = getUser(c);
   const token = bearer(c.req.header("Authorization"))!;
   const { old_password, new_password } = c.req.valid("json");

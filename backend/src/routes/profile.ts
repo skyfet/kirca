@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { zValidator } from "@hono/zod-validator";
+import { validator } from "../lib/validator";
 
 import { getUser, requireAuth } from "../lib/middleware";
 import { profileUpdateBody } from "../lib/schemas";
@@ -30,7 +30,7 @@ profileRoutes.get("/me", requireAuth, async (c) => {
   return c.json(p);
 });
 
-profileRoutes.patch("/me", requireAuth, zValidator("json", profileUpdateBody), async (c) => {
+profileRoutes.patch("/me", requireAuth, validator("json", profileUpdateBody), async (c) => {
   const u = getUser(c);
   const body = c.req.valid("json");
 

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { zValidator } from "@hono/zod-validator";
+import { validator } from "../lib/validator";
 
 import { getUser, requireAuth, uuid } from "../lib/middleware";
 import {
@@ -20,7 +20,7 @@ export const uploadRoutes = new Hono<{ Bindings: Env; Variables: Vars }>();
 // Дальше client_id-сообщение от клиента ссылается на attachment_id.
 // Если PUT не пришёл — запись остаётся в БД, но без файла; в чат не попадёт.
 
-uploadRoutes.post("/uploads", requireAuth, zValidator("json", uploadSignBody), async (c) => {
+uploadRoutes.post("/uploads", requireAuth, validator("json", uploadSignBody), async (c) => {
   if (!r2Configured(c.env)) return c.json({ error: "uploads not configured" }, 503);
   const u = getUser(c);
   const { mime, size, width, height } = c.req.valid("json");
