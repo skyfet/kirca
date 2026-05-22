@@ -7,6 +7,7 @@ import '../state.dart';
 import '../storage/cache.dart';
 import '../theme/app_background.dart';
 import '../theme/app_theme.dart';
+import '../ws/user_ws.dart';
 import 'chat.dart';
 import 'invites.dart';
 import 'profile.dart';
@@ -133,6 +134,7 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
     final roomsAsync = ref.watch(roomsProvider);
     final invitesAsync = ref.watch(invitesProvider);
     final invitesCount = invitesAsync.valueOrNull?.length ?? 0;
+    final connected = ref.watch(userWsConnectedProvider).valueOrNull ?? false;
 
     return GlassPage(
       background: const AppBackground(),
@@ -144,13 +146,36 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
         extendBody: true,
         appBar: GlassAppBar(
           centerTitle: false,
-          title: Text(
-            'Комнаты',
-            style: const TextStyle(
-              color: AppColors.onGlass,
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-            ),
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Комнаты',
+                style: TextStyle(
+                  color: AppColors.onGlass,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(width: 8),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: connected ? const Color(0xFF34D399) : const Color(0xFFFF8A65),
+                  boxShadow: connected
+                      ? [
+                          BoxShadow(
+                            color: const Color(0xFF34D399).withOpacity(0.6),
+                            blurRadius: 6,
+                          ),
+                        ]
+                      : null,
+                ),
+              ),
+            ],
           ),
           actions: [
             GlassIconButton(

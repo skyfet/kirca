@@ -89,6 +89,10 @@ class AuthNotifier extends StateNotifier<Auth?> {
 
 final authProvider = StateNotifierProvider<AuthNotifier, Auth?>((_) => AuthNotifier());
 
+/// id комнаты, на чьём экране сейчас находится пользователь.
+/// UserWs смотрит сюда, чтобы НЕ бампить unread для активного чата.
+final currentRoomProvider = StateProvider<String?>((_) => null);
+
 // ---- data providers ------------------------------------------------------
 // Источник правды для UI — SQLite-кэш. REST-запросы лишь обновляют его.
 

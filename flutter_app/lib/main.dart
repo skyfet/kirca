@@ -7,6 +7,7 @@ import 'state.dart';
 import 'screens/login.dart';
 import 'screens/rooms.dart';
 import 'theme/app_theme.dart';
+import 'ws/user_ws.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,6 +27,8 @@ class App extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authProvider);
+    // Активируем глобальный WS, пока есть auth.
+    if (auth != null) ref.watch(userWsProvider);
     return MaterialApp(
       title: 'Kirca',
       debugShowCheckedModeBanner: false,

@@ -17,6 +17,7 @@ import { uploadRoutes } from "./routes/uploads";
 import { wsRoutes } from "./routes/ws";
 
 export { Room } from "./room";
+export { UserHub } from "./user_hub";
 
 const app = createApp();
 

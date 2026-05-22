@@ -1,9 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { notifyDevices, type ApnsEnv } from "./lib/apns";
 import { logError } from "./lib/log";
+import { notifyUsers } from "./lib/notify";
 
 type Env = ApnsEnv & {
   DB: D1Database;
+  USER_HUB: DurableObjectNamespace;
   R2_PUBLIC_BASE?: string;
 };
 
@@ -215,7 +217,48 @@ export class Room extends DurableObject<Env> {
     this.broadcast(JSON.stringify(out));
 
     if (isNew) {
+      this.ctx.waitUntil(this.fanoutNewMessage(att.roomId, stored, attachmentPayload));
       this.ctx.waitUntil(this.pushOffline(att.roomId, stored));
+    }
+  }
+
+  /**
+   * Разослать new_message событие в персональные WS-каналы всех членов
+   * комнаты — чтобы список комнат и unread-счётчик обновились в фоне,
+   * даже если конкретный чат не открыт.
+   */
+  private async fanoutNewMessage(
+    roomId: string,
+    msg: StoredMessage,
+    attachment: Record<string, unknown> | null,
+  ): Promise<void> {
+    try {
+      const room = await this.env.DB
+        .prepare("SELECT name FROM rooms WHERE id = ?")
+        .bind(roomId)
+        .first<{ name: string }>();
+      const { results } = await this.env.DB
+        .prepare("SELECT user_id FROM memberships WHERE room_id = ?")
+        .bind(roomId)
+        .all<{ user_id: string }>();
+      if (!room || !results) return;
+      const recipients = results.map((r) => r.user_id);
+      await notifyUsers(this.env, recipients, {
+        type: "new_message",
+        room_id: roomId,
+        room_name: room.name,
+        message: {
+          id: msg.id,
+          client_id: msg.client_id,
+          user_id: msg.user_id,
+          username: msg.username,
+          text: msg.text,
+          created_at: msg.created_at,
+          attachment,
+        },
+      });
+    } catch (e) {
+      logError({ at: "fanoutNewMessage", err: (e as Error).message });
     }
   }
 

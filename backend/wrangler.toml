@@ -24,6 +24,10 @@ database_id = "b5ddc653-b440-4cf2-94a4-61d1f6ef3be3"
 name = "ROOM"
 class_name = "Room"
 
+[[durable_objects.bindings]]
+name = "USER_HUB"
+class_name = "UserHub"
+
 # Attachments bucket. One-time setup on Cloudflare:
 #   wrangler r2 bucket create kirca-attachments
 # For public URLs either attach a custom domain or enable the r2.dev dev-url:
@@ -38,6 +42,10 @@ bucket_name = "kirca-attachments"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["UserHub"]
 
 # Daily sweep: expired sessions, old rate_limits, old invites.
 [triggers]
@@ -65,6 +73,10 @@ database_id = "REPLACE_ME"
 name = "ROOM"
 class_name = "Room"
 
+[[env.staging.durable_objects.bindings]]
+name = "USER_HUB"
+class_name = "UserHub"
+
 [[env.staging.r2_buckets]]
 binding = "ATTACHMENTS"
 bucket_name = "kirca-attachments-staging"
@@ -72,3 +84,7 @@ bucket_name = "kirca-attachments-staging"
 [[env.staging.migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+[[env.staging.migrations]]
+tag = "v2"
+new_sqlite_classes = ["UserHub"]

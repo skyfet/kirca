@@ -255,6 +255,16 @@ class RoomsCache {
     _notifier.notify(_key);
   }
 
+  /// Атомарно увеличить unread на 1 (для нового входящего сообщения).
+  static Future<void> bumpUnread(String roomId) async {
+    final db = await AppDb.open();
+    await db.rawUpdate(
+      'UPDATE rooms SET unread = unread + 1 WHERE id = ?',
+      [roomId],
+    );
+    _notifier.notify(_key);
+  }
+
   static Future<void> setLast(String roomId, String text, int at) async {
     final db = await AppDb.open();
     await db.update(
@@ -512,6 +522,25 @@ class InvitesCache {
   static Future<void> remove(String id) async {
     final db = await AppDb.open();
     await db.delete('invites', where: 'id = ?', whereArgs: [id]);
+    _notifier.notify(_key);
+  }
+
+  static Future<void> upsert(Map<String, dynamic> inv) async {
+    final db = await AppDb.open();
+    await db.insert(
+      'invites',
+      {
+        'id': inv['id'].toString(),
+        'room_id': inv['room_id']?.toString() ?? '',
+        'room_name': inv['room_name']?.toString() ?? '',
+        'inviter_id': inv['inviter_id']?.toString(),
+        'inviter_username': inv['inviter_username']?.toString(),
+        'inviter_display_name': inv['inviter_display_name']?.toString(),
+        'created_at': (inv['created_at'] as num?)?.toInt() ??
+            DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
     _notifier.notify(_key);
   }
 }

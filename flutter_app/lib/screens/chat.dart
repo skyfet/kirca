@@ -102,6 +102,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _muted = widget.muted;
     WidgetsBinding.instance.addObserver(this);
     _scroll.addListener(_onScroll);
+    // Сообщаем глобальному WS, что активная комната — эта, чтобы не бампить
+    // unread на свои же входящие сюда.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_disposed) {
+        ref.read(currentRoomProvider.notifier).state = widget.roomId;
+      }
+    });
     _hydrateAndConnect();
   }
 
@@ -505,6 +512,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   @override
   void dispose() {
     _disposed = true;
+    // Снимаем флаг активной комнаты — теперь фоновые сообщения снова
+    // увеличивают unread.
+    final notifier = ref.read(currentRoomProvider.notifier);
+    if (notifier.state == widget.roomId) {
+      notifier.state = null;
+    }
     WidgetsBinding.instance.removeObserver(this);
     _reconnectTimer?.cancel();
     _typingStopTimer?.cancel();
