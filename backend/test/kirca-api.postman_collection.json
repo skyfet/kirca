@@ -1023,6 +1023,404 @@
       }
     },
     {
+      "name": "Upload reserve (bad mime) -> 415",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 415', () => pm.response.to.have.status(415));",
+              "pm.test('mentions mime', () => pm.expect(pm.response.json().error).to.match(/mime/i));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"mime\": \"application/pdf\",\n  \"size\": 5\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/uploads",
+          "host": ["{{baseUrl}}"],
+          "path": ["uploads"]
+        }
+      }
+    },
+    {
+      "name": "Upload reserve (oversize) -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"mime\": \"image/png\",\n  \"size\": 999999999\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/uploads",
+          "host": ["{{baseUrl}}"],
+          "path": ["uploads"]
+        }
+      }
+    },
+    {
+      "name": "Upload reserve (no auth) -> 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 401', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "auth": { "type": "noauth" },
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"mime\": \"image/png\",\n  \"size\": 5\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/uploads",
+          "host": ["{{baseUrl}}"],
+          "path": ["uploads"]
+        }
+      }
+    },
+    {
+      "name": "Upload reserve (ok) -> 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "const j = pm.response.json();",
+              "pm.test('id returned', () => pm.expect(j.id).to.be.a('string').and.to.have.length.above(8));",
+              "pm.test('upload_url matches id', () => pm.expect(j.upload_url).to.eql('/uploads/' + j.id));",
+              "pm.environment.set('attachmentId', j.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"mime\": \"image/png\",\n  \"size\": 5\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/uploads",
+          "host": ["{{baseUrl}}"],
+          "path": ["uploads"]
+        }
+      }
+    },
+    {
+      "name": "Upload PUT (content-length mismatch) -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "image/png" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "longerthan5",
+          "options": { "raw": { "language": "text" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/uploads/{{attachmentId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["uploads", "{{attachmentId}}"]
+        }
+      }
+    },
+    {
+      "name": "Upload PUT (wrong content-type) -> 415",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 415', () => pm.response.to.have.status(415));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "image/jpeg" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "hello",
+          "options": { "raw": { "language": "text" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/uploads/{{attachmentId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["uploads", "{{attachmentId}}"]
+        }
+      }
+    },
+    {
+      "name": "Upload PUT (ok) -> 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.test('ok=true', () => pm.expect(pm.response.json().ok).to.eql(true));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "image/png" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "hello",
+          "options": { "raw": { "language": "text" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/uploads/{{attachmentId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["uploads", "{{attachmentId}}"]
+        }
+      }
+    },
+    {
+      "name": "Upload PUT twice -> 409",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 409', () => pm.response.to.have.status(409));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "image/png" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "hello",
+          "options": { "raw": { "language": "text" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/uploads/{{attachmentId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["uploads", "{{attachmentId}}"]
+        }
+      }
+    },
+    {
+      "name": "Attachment GET (no message reference) -> 403",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 403', () => pm.response.to.have.status(403));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/attachments/{{attachmentId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["attachments", "{{attachmentId}}"]
+        }
+      }
+    },
+    {
+      "name": "Attachment GET (unknown id) -> 404",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 404', () => pm.response.to.have.status(404));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/attachments/does-not-exist",
+          "host": ["{{baseUrl}}"],
+          "path": ["attachments", "does-not-exist"]
+        }
+      }
+    },
+    {
+      "name": "Avatar PUT (no auth) -> 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 401', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "auth": { "type": "noauth" },
+        "header": [
+          { "key": "Content-Type", "value": "image/png" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "hello",
+          "options": { "raw": { "language": "text" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/me/avatar",
+          "host": ["{{baseUrl}}"],
+          "path": ["me", "avatar"]
+        }
+      }
+    },
+    {
+      "name": "Avatar PUT (bad mime) -> 415",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 415', () => pm.response.to.have.status(415));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "text/plain" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "hello",
+          "options": { "raw": { "language": "text" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/me/avatar",
+          "host": ["{{baseUrl}}"],
+          "path": ["me", "avatar"]
+        }
+      }
+    },
+    {
+      "name": "Avatar PUT (ok) -> 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.test('returns avatar_url field', () => pm.expect(pm.response.json()).to.have.property('avatar_url'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "image/png" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "hello-png-bytes",
+          "options": { "raw": { "language": "text" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/me/avatar",
+          "host": ["{{baseUrl}}"],
+          "path": ["me", "avatar"]
+        }
+      }
+    },
+    {
       "name": "Logout",
       "event": [
         {
