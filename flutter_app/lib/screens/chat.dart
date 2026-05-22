@@ -725,17 +725,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
                               m.username,
                               style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
                             ),
-                          if (m.attachment != null && m.attachment!.url != null)
+                          if (m.attachment != null)
                             Padding(
                               padding: const EdgeInsets.only(bottom: 4, top: 2),
                               child: ClipRRect(
                                 borderRadius: BorderRadius.circular(8),
-                                child: Image.network(
-                                  m.attachment!.url!,
-                                  width: 220,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) => const Icon(Icons.broken_image),
-                                ),
+                                child: _attachmentImage(m.attachment!),
                               ),
                             ),
                           if (m.deletedAt != null)
@@ -832,6 +827,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
           ),
         ],
       ),
+    );
+  }
+
+  // Если R2_PUBLIC_BASE не настроен на сервере, url приходит null —
+  // тогда тянем картинку через аутентифицированный /attachments/:id у воркера.
+  Widget _attachmentImage(_Attachment a) {
+    if (a.url != null) {
+      return Image.network(
+        a.url!,
+        width: 220,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const Icon(Icons.broken_image),
+      );
+    }
+    final id = a.id;
+    final auth = ref.read(authProvider);
+    if (id == null || auth == null) {
+      return const Icon(Icons.broken_image);
+    }
+    return Image.network(
+      '${Config.apiBase}/attachments/$id',
+      headers: {'Authorization': 'Bearer ${auth.token}'},
+      width: 220,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => const Icon(Icons.broken_image),
     );
   }
 
