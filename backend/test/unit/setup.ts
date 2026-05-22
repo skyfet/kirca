@@ -11,5 +11,8 @@ export async function freshDb(): Promise<D1Database> {
   await env.DB.exec("DELETE FROM users");
   await env.DB.exec("DELETE FROM rate_limits");
   await env.DB.exec("DELETE FROM devices");
+  await env.DB.exec("DELETE FROM read_state");
+  await env.DB.exec("DELETE FROM invites");
+  await env.DB.exec("DELETE FROM attachments");
   return env.DB;
 }

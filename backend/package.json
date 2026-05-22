@@ -22,7 +22,9 @@
     "wrangler": "^3.95.0"
   },
   "dependencies": {
+    "@hono/zod-validator": "^0.4.2",
     "@noble/hashes": "^1.5.0",
-    "hono": "^4.6.14"
+    "hono": "^4.6.14",
+    "zod": "^3.23.8"
   }
 }

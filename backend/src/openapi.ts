@@ -207,7 +207,10 @@ export const openapiSpec = {
       post: {
         tags: ["auth"],
         summary: "Revoke the current session",
-        description: "Deletes just the session bound to the Bearer token. Other sessions of the same user are kept.",
+        description: "Deletes just the session bound to the Bearer token. Pass `?all=1` to revoke every session of the current user.",
+        parameters: [
+          { name: "all", in: "query", required: false, schema: { type: "string", enum: ["1"] }, description: "When `1`, drop every session for the user." },
+        ],
         responses: {
           "204": { description: "Session removed (or token already unknown — idempotent)." },
           "401": { description: "Missing bearer token.", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
@@ -381,12 +384,180 @@ export const openapiSpec = {
         },
       },
     },
+    "/me": {
+      get: {
+        tags: ["auth"],
+        summary: "Get the current user profile",
+        responses: {
+          "200": { description: "Profile.", content: { "application/json": {} } },
+          "401": { description: "Unauthorized." },
+        },
+      },
+      patch: {
+        tags: ["auth"],
+        summary: "Update display_name / avatar_url",
+        requestBody: { content: { "application/json": { schema: { type: "object", properties: { display_name: { type: "string", nullable: true }, avatar_url: { type: "string", format: "uri", nullable: true } } } } } },
+        responses: { "200": { description: "Updated profile." }, "401": { description: "Unauthorized." } },
+      },
+      delete: {
+        tags: ["auth"],
+        summary: "Delete the current account",
+        description: "Cascades: sessions, devices, memberships, read_state, invites. Messages stay but author is masked.",
+        responses: { "204": { description: "Account deleted." }, "401": { description: "Unauthorized." } },
+      },
+    },
+    "/me/avatar": {
+      put: {
+        tags: ["auth"],
+        summary: "Upload avatar image",
+        description: "PUT body is the raw image (max 5MB, image/jpeg|png|webp|gif|heic).",
+        responses: { "200": { description: "{avatar_url}." }, "401": { description: "Unauthorized." }, "413": { description: "Too large." }, "415": { description: "Unsupported mime." }, "503": { description: "Uploads not configured." } },
+      },
+    },
+    "/users/{id}": {
+      get: {
+        tags: ["auth"],
+        summary: "Public profile by user id",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "Profile." }, "401": { description: "Unauthorized." }, "404": { description: "Not found." } },
+      },
+    },
+    "/rooms/{id}/leave": {
+      post: {
+        tags: ["rooms"],
+        summary: "Leave a room (non-owner)",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "204": { description: "Left." }, "401": { description: "Unauthorized." }, "404": { description: "Not a member." }, "409": { description: "Owner cannot leave." } },
+      },
+    },
+    "/rooms/{id}/members": {
+      get: {
+        tags: ["rooms"],
+        summary: "List members and online state",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "Members with role, joined_at, online flag." }, "401": { description: "Unauthorized." }, "403": { description: "No access." } },
+      },
+    },
+    "/rooms/{id}/membership": {
+      patch: {
+        tags: ["rooms"],
+        summary: "Mute / unmute room for the current user",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: { content: { "application/json": { schema: { type: "object", required: ["muted"], properties: { muted: { type: "boolean" } } } } } },
+        responses: { "200": { description: "{muted}." }, "401": { description: "Unauthorized." }, "404": { description: "Not a member." } },
+      },
+    },
+    "/rooms/{id}/invites": {
+      post: {
+        tags: ["rooms"],
+        summary: "Invite a user to a private room",
+        description: "Inviter must be a member. Body: `{username}` or `{user_id}`.",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: { content: { "application/json": { schema: { type: "object", properties: { username: { type: "string" }, user_id: { type: "string" } } } } } },
+        responses: { "200": { description: "Invite created." }, "400": { description: "Self-invite." }, "401": { description: "Unauthorized." }, "403": { description: "Not a member." }, "404": { description: "Room or user not found." }, "409": { description: "Public room / already member / already invited." } },
+      },
+    },
+    "/invites": {
+      get: {
+        tags: ["rooms"],
+        summary: "List pending invites for the current user",
+        responses: { "200": { description: "List of invites with room and inviter info." }, "401": { description: "Unauthorized." } },
+      },
+    },
+    "/invites/{id}/accept": {
+      post: {
+        tags: ["rooms"],
+        summary: "Accept a pending invite",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "Joined." }, "401": { description: "Unauthorized." }, "404": { description: "Not found." }, "409": { description: "Already responded." } },
+      },
+    },
+    "/invites/{id}/decline": {
+      post: {
+        tags: ["rooms"],
+        summary: "Decline a pending invite",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "Declined." }, "401": { description: "Unauthorized." }, "404": { description: "Not found." } },
+      },
+    },
+    "/invites/{id}": {
+      delete: {
+        tags: ["rooms"],
+        summary: "Revoke an invite you created",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "204": { description: "Revoked." }, "401": { description: "Unauthorized." }, "404": { description: "Not found." } },
+      },
+    },
+    "/rooms/{id}/messages/{msgId}": {
+      patch: {
+        tags: ["rooms"],
+        summary: "Edit a message (author only)",
+        parameters: [
+          { name: "id", in: "path", required: true, schema: { type: "string" } },
+          { name: "msgId", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["text"], properties: { text: { type: "string", minLength: 1, maxLength: 4000 } } } } } },
+        responses: { "200": { description: "{id,text,edited_at}." }, "401": { description: "Unauthorized." }, "403": { description: "Not the author." }, "404": { description: "Not found." }, "409": { description: "Already deleted." } },
+      },
+      delete: {
+        tags: ["rooms"],
+        summary: "Delete a message (author or owner)",
+        parameters: [
+          { name: "id", in: "path", required: true, schema: { type: "string" } },
+          { name: "msgId", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: { "204": { description: "Tombstoned." }, "401": { description: "Unauthorized." }, "403": { description: "Forbidden." }, "404": { description: "Not found." } },
+      },
+    },
+    "/rooms/{id}/read": {
+      post: {
+        tags: ["rooms"],
+        summary: "Mark messages read up to a timestamp",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["last_read_at"], properties: { last_read_at: { type: "integer" } } } } } },
+        responses: { "200": { description: "Stored." }, "401": { description: "Unauthorized." }, "403": { description: "No access." } },
+      },
+    },
+    "/rooms/{id}/reads": {
+      get: {
+        tags: ["rooms"],
+        summary: "Per-user last_read_at for the room",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "{reads:[{user_id,last_read_at}]}." }, "401": { description: "Unauthorized." }, "403": { description: "No access." } },
+      },
+    },
+    "/uploads": {
+      post: {
+        tags: ["devices"],
+        summary: "Reserve an attachment slot",
+        description: "Step 1 of upload: server returns {id, upload_url} — PUT the bytes to upload_url next.",
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["mime", "size"], properties: { mime: { type: "string" }, size: { type: "integer" }, width: { type: "integer" }, height: { type: "integer" } } } } } },
+        responses: { "200": { description: "{id, upload_url, public_url}." }, "401": { description: "Unauthorized." }, "415": { description: "Unsupported mime." }, "503": { description: "Uploads not configured." } },
+      },
+    },
+    "/uploads/{id}": {
+      put: {
+        tags: ["devices"],
+        summary: "Upload the bytes for a reserved attachment",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "Stored." }, "401": { description: "Unauthorized." }, "403": { description: "Not the owner." }, "404": { description: "Not found." }, "409": { description: "Already uploaded." }, "415": { description: "Mime mismatch." } },
+      },
+    },
+    "/attachments/{id}": {
+      get: {
+        tags: ["devices"],
+        summary: "Download an attachment via the worker",
+        description: "Use when the bucket has no public domain. Requires access to a room that references this attachment.",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "Binary." }, "401": { description: "Unauthorized." }, "403": { description: "No access." }, "404": { description: "Not found." } },
+      },
+    },
     "/rooms/{id}/ws": {
       get: {
         tags: ["realtime"],
         summary: "WebSocket upgrade for live chat",
         description:
-          "Open with `Upgrade: websocket`. Auth is via `?token=<sessionToken>` (browsers can't set headers on `WebSocket`). Server routes to the room's Durable Object, which uses WebSocket Hibernation.\n\nMessages on the socket are JSON:\n\n**Client → server**\n- `{ \"type\": \"msg\", \"client_id\": \"<uuid>\", \"text\": \"...\" }` — `client_id` is the idempotency key; the DO dedups on `UNIQUE(room_id, client_id)`.\n\n**Server → client**\n- `{ \"type\": \"msg\", \"id\": <int>, \"client_id\": \"<uuid>\", \"user_id\": \"...\", \"username\": \"...\", \"text\": \"...\", \"created_at\": <ms> }` — broadcast of an accepted message.\n\nPer-user send rate limit: 10 messages / 5 seconds. On invalid/expired token the socket is closed with code 1008.",
+          "Open with `Upgrade: websocket`. Auth is via `?token=<sessionToken>`.\n\n**Client → server**\n- `{type:'msg', client_id, text?, attachment_id?}` — at least one of `text`/`attachment_id` required.\n- `{type:'typing', is_typing:boolean}` — ephemeral, no D1.\n\n**Server → client**\n- `{type:'msg', id, client_id, user_id, username, text, created_at, attachment?}` — broadcast/ack.\n- `{type:'edit', id, text, edited_at}` — message text changed.\n- `{type:'delete', id, deleted_at}` — message tombstoned.\n- `{type:'read', user_id, last_read_at}` — read receipt update.\n- `{type:'typing', user_id, username, is_typing}` — peer typing.\n- `{type:'presence', user_id, online}` — connection lifecycle.\n- `{type:'error', code}` — e.g. `rate_limited`.\n\nPer-user send rate limit: 10 msg / 5s. Invalid token → close with code 1008.",
         security: [],
         parameters: [
           { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
