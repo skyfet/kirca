@@ -2,7 +2,10 @@ import { DurableObject } from "cloudflare:workers";
 import { notifyDevices, type ApnsEnv } from "./lib/apns";
 import { logError } from "./lib/log";
 
-type Env = ApnsEnv & { DB: D1Database };
+type Env = ApnsEnv & {
+  DB: D1Database;
+  R2_PUBLIC_BASE?: string;
+};
 
 type Attachment = {
   userId: string;
@@ -17,9 +20,9 @@ type StoredMessage = {
   username: string;
   text: string;
   created_at: number;
+  attachment_id: string | null;
 };
 
-// WS-level rate limit (per user per DO): защита от спама в комнату.
 const WS_RL_LIMIT = 10;
 const WS_RL_WINDOW_MS = 5000;
 
@@ -27,13 +30,32 @@ const WS_RL_WINDOW_MS = 5000;
  * Одна Durable Object на одну комнату.
  * Держит активные WS-соединения и рассылает сообщения.
  * Использует WebSocket Hibernation API — между событиями инстанс не жжёт CPU.
+ *
+ * HTTP-эндпоинты (для воркера, internal):
+ *   GET /online — список user_id онлайн (для GET /rooms/:id/members).
+ *   POST /broadcast — внешний edit/delete/read broadcast (worker зовёт после записи в D1).
  */
 export class Room extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/online") {
+      const users = new Set<string>();
+      for (const sock of this.ctx.getWebSockets()) {
+        try {
+          const a = sock.deserializeAttachment() as Attachment | null;
+          if (a?.userId) users.add(a.userId);
+        } catch { /* */ }
+      }
+      return Response.json({ users: [...users] });
+    }
+    if (url.pathname === "/broadcast" && request.method === "POST") {
+      const payload = await request.text();
+      this.broadcast(payload);
+      return new Response(null, { status: 204 });
+    }
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response("expected websocket", { status: 426 });
     }
-    const url = new URL(request.url);
     const userId = url.searchParams.get("userId") ?? "";
     const username = url.searchParams.get("username") ?? "";
     const roomId = url.searchParams.get("roomId") ?? "";
@@ -44,7 +66,20 @@ export class Room extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ userId, username, roomId } satisfies Attachment);
 
+    // Уведомим остальных, что юзер появился. Это даёт presence без отдельного запроса.
+    this.broadcast(
+      JSON.stringify({ type: "presence", user_id: userId, online: true }),
+      server,
+    );
+
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  private broadcast(payload: string, exclude?: WebSocket): void {
+    for (const sock of this.ctx.getWebSockets()) {
+      if (sock === exclude) continue;
+      try { sock.send(payload); } catch { /* */ }
+    }
   }
 
   private async checkWsRateLimit(userId: string): Promise<boolean> {
@@ -64,28 +99,57 @@ export class Room extends DurableObject<Env> {
     const att = ws.deserializeAttachment() as Attachment;
     if (typeof raw !== "string") return;
 
-    let msg: { type?: string; text?: string; client_id?: string };
-    try { msg = JSON.parse(raw); } catch { return; }
-    if (msg.type !== "msg" || typeof msg.text !== "string" || !msg.text.trim()) return;
+    let msg: {
+      type?: string;
+      text?: string;
+      client_id?: string;
+      attachment_id?: string;
+      is_typing?: boolean;
+    };
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      return;
+    }
+
+    if (msg.type === "typing") {
+      // Без записи в D1, без rate-limit — но c сильным capping в клиенте.
+      this.broadcast(
+        JSON.stringify({
+          type: "typing",
+          user_id: att.userId,
+          username: att.username,
+          is_typing: msg.is_typing !== false,
+        }),
+        ws,
+      );
+      return;
+    }
+
+    if (msg.type !== "msg") return;
+    const hasText = typeof msg.text === "string" && msg.text.trim().length > 0;
+    const hasAttachment = typeof msg.attachment_id === "string" && msg.attachment_id.length > 0;
+    if (!hasText && !hasAttachment) return;
 
     if (!(await this.checkWsRateLimit(att.userId))) {
       try {
         ws.send(JSON.stringify({ type: "error", code: "rate_limited" }));
-      } catch {}
+      } catch { /* */ }
       return;
     }
 
-    const text = msg.text.slice(0, 4000);
-    const clientId = typeof msg.client_id === "string" && msg.client_id.length > 0
-      ? msg.client_id.slice(0, 64)
-      : null;
+    const text = hasText ? msg.text!.slice(0, 4000) : "";
+    const attachmentId = hasAttachment ? msg.attachment_id!.slice(0, 64) : null;
+    const clientId =
+      typeof msg.client_id === "string" && msg.client_id.length > 0
+        ? msg.client_id.slice(0, 64)
+        : null;
 
-    // Дедуп: если client_id задан и сообщение уже было — отдаём существующее.
     let stored: StoredMessage | null = null;
     if (clientId) {
       const existing = await this.env.DB
         .prepare(
-          "SELECT id, client_id, user_id, username, text, created_at FROM messages WHERE room_id = ? AND client_id = ?"
+          "SELECT id, client_id, user_id, username, text, created_at, attachment_id FROM messages WHERE room_id = ? AND client_id = ?",
         )
         .bind(att.roomId, clientId)
         .first<StoredMessage>();
@@ -101,21 +165,29 @@ export class Room extends DurableObject<Env> {
         username: att.username,
         text,
         created_at: Date.now(),
+        attachment_id: attachmentId,
       };
       try {
         await this.env.DB
           .prepare(
-            "INSERT INTO messages (id, room_id, user_id, username, text, created_at, client_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO messages (id, room_id, user_id, username, text, created_at, client_id, attachment_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
           )
-          .bind(stored.id, att.roomId, stored.user_id, stored.username, stored.text, stored.created_at, clientId)
+          .bind(
+            stored.id,
+            att.roomId,
+            stored.user_id,
+            stored.username,
+            stored.text,
+            stored.created_at,
+            clientId,
+            attachmentId,
+          )
           .run();
       } catch (_e) {
-        // Гонка: параллельный коннект уже вставил эту же (room_id, client_id).
-        // Перечитываем существующую строку и используем её.
         if (clientId) {
           const existing = await this.env.DB
             .prepare(
-              "SELECT id, client_id, user_id, username, text, created_at FROM messages WHERE room_id = ? AND client_id = ?"
+              "SELECT id, client_id, user_id, username, text, created_at, attachment_id FROM messages WHERE room_id = ? AND client_id = ?",
             )
             .bind(att.roomId, clientId)
             .first<StoredMessage>();
@@ -127,6 +199,8 @@ export class Room extends DurableObject<Env> {
       }
     }
 
+    const attachmentPayload = await this.attachmentPayload(stored.attachment_id);
+
     const out = {
       type: "msg",
       id: stored.id,
@@ -135,40 +209,54 @@ export class Room extends DurableObject<Env> {
       username: stored.username,
       text: stored.text,
       created_at: stored.created_at,
+      attachment: attachmentPayload,
     };
 
-    const payload = JSON.stringify(out);
-    for (const sock of this.ctx.getWebSockets()) {
-      try { sock.send(payload); } catch { /* socket мёртв — игнор */ }
-    }
+    this.broadcast(JSON.stringify(out));
 
-    // Push offline-юзерам — только для новых сообщений (не для повторов с тем же client_id).
     if (isNew) {
       this.ctx.waitUntil(this.pushOffline(att.roomId, stored));
     }
   }
 
+  private async attachmentPayload(
+    attachmentId: string | null,
+  ): Promise<Record<string, unknown> | null> {
+    if (!attachmentId) return null;
+    const a = await this.env.DB
+      .prepare("SELECT id, mime, r2_key, width, height FROM attachments WHERE id = ?")
+      .bind(attachmentId)
+      .first<{ id: string; mime: string; r2_key: string; width: number | null; height: number | null }>();
+    if (!a) return null;
+    const base = this.env.R2_PUBLIC_BASE?.replace(/\/+$/, "") ?? null;
+    return {
+      id: a.id,
+      mime: a.mime,
+      url: base ? `${base}/${a.r2_key}` : null,
+      width: a.width,
+      height: a.height,
+    };
+  }
+
   private async pushOffline(roomId: string, msg: StoredMessage): Promise<void> {
     try {
-      // Кто онлайн в этой DO.
       const online = new Set<string>();
       for (const sock of this.ctx.getWebSockets()) {
         try {
           const a = sock.deserializeAttachment() as Attachment | null;
           if (a?.userId) online.add(a.userId);
-        } catch {}
+        } catch { /* */ }
       }
 
-      // Получатели: участники комнаты, кроме онлайн и автора.
-      // Для публичных комнат пушим только тем, кто join-нулся (owner/member).
       const room = await this.env.DB
         .prepare("SELECT name FROM rooms WHERE id = ?")
         .bind(roomId)
         .first<{ name: string }>();
       if (!room) return;
 
+      // Не пушим тем, кто замьютил комнату.
       const { results } = await this.env.DB
-        .prepare("SELECT user_id FROM memberships WHERE room_id = ?")
+        .prepare("SELECT user_id FROM memberships WHERE room_id = ? AND muted = 0")
         .bind(roomId)
         .all<{ user_id: string }>();
       const targets = (results ?? [])
@@ -176,10 +264,14 @@ export class Room extends DurableObject<Env> {
         .filter((uid) => uid !== msg.user_id && !online.has(uid));
       if (targets.length === 0) return;
 
+      const body = msg.text && msg.text.length > 0
+        ? msg.text.length > 140 ? msg.text.slice(0, 140) + "…" : msg.text
+        : "📎 вложение";
+
       await notifyDevices(this.env.DB, this.env, targets, {
         alert: {
           title: `${room.name} · ${msg.username}`,
-          body: msg.text.length > 140 ? msg.text.slice(0, 140) + "…" : msg.text,
+          body,
         },
         sound: "default",
         "thread-id": roomId,
@@ -190,7 +282,28 @@ export class Room extends DurableObject<Env> {
   }
 
   async webSocketClose(ws: WebSocket, code: number, _reason: string, _wasClean: boolean) {
-    try { ws.close(code, "bye"); } catch { /* already closed */ }
+    let userId = "";
+    try {
+      const a = ws.deserializeAttachment() as Attachment | null;
+      userId = a?.userId ?? "";
+    } catch { /* */ }
+    try { ws.close(code, "bye"); } catch { /* */ }
+    // Если у юзера больше нет открытых сокетов — broadcast offline.
+    if (userId) {
+      let stillOnline = false;
+      for (const sock of this.ctx.getWebSockets()) {
+        if (sock === ws) continue;
+        try {
+          const a = sock.deserializeAttachment() as Attachment | null;
+          if (a?.userId === userId) { stillOnline = true; break; }
+        } catch { /* */ }
+      }
+      if (!stillOnline) {
+        this.broadcast(
+          JSON.stringify({ type: "presence", user_id: userId, online: false }),
+        );
+      }
+    }
   }
 
   async webSocketError(ws: WebSocket) {

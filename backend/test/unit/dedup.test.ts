@@ -50,7 +50,7 @@ describe("WS dedup", () => {
   });
 
   it("одинаковый client_id вставляется только один раз", async () => {
-    const a = await register("a1", "secret123");
+    const a = await register("alice", "secret123");
     const roomId = await createRoom(a.token, "test", true);
 
     const ws = await openWs(roomId, a.token);
