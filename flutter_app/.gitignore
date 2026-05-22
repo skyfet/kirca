@@ -1,0 +1,22 @@
+# Dart / Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+pubspec.lock
+
+# IDE
+.idea/
+.vscode/
+
+# Auto-generated desktop platform folders (used only for `flutter drive` e2e)
+linux/
+windows/
+macos/
+android/
+
+# Test artefacts (regenerated per run)
+integration_test/screenshots/

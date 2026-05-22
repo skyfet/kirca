@@ -24,21 +24,25 @@ class AuthNotifier extends StateNotifier<Auth?> {
   static const _storage = FlutterSecureStorage();
 
   Future<void> _load() async {
-    final t = await _storage.read(key: 'token');
-    final uid = await _storage.read(key: 'userId');
-    final un = await _storage.read(key: 'username');
-    if (t != null && uid != null && un != null) {
-      state = Auth(t, uid, un);
-      // На фоне пробуем зарегистрировать device-token (на iOS).
-      // Ошибки игнорируем — push best-effort.
-      _registerPushSilently(t);
+    try {
+      final t = await _storage.read(key: 'token');
+      final uid = await _storage.read(key: 'userId');
+      final un = await _storage.read(key: 'username');
+      if (t != null && uid != null && un != null) {
+        state = Auth(t, uid, un);
+        _registerPushSilently(t);
+      }
+    } catch (_) {
+      // headless / no keyring — стартуем без сохранённого auth.
     }
   }
 
   Future<void> set(Auth a) async {
-    await _storage.write(key: 'token', value: a.token);
-    await _storage.write(key: 'userId', value: a.userId);
-    await _storage.write(key: 'username', value: a.username);
+    try {
+      await _storage.write(key: 'token', value: a.token);
+      await _storage.write(key: 'userId', value: a.userId);
+      await _storage.write(key: 'username', value: a.username);
+    } catch (_) { /* best-effort */ }
     state = a;
     _registerPushSilently(a.token);
   }
@@ -59,7 +63,10 @@ class AuthNotifier extends StateNotifier<Auth?> {
   /// Выход по инициативе пользователя: бросает запрос на сервер, чистит локалку.
   Future<void> logout() async {
     final t = state?.token;
-    final deviceToken = await _storage.read(key: 'deviceToken');
+    String? deviceToken;
+    try {
+      deviceToken = await _storage.read(key: 'deviceToken');
+    } catch (_) { /* best-effort */ }
     if (t != null) {
       try {
         if (deviceToken != null && deviceToken.isNotEmpty) {
@@ -82,7 +89,7 @@ class AuthNotifier extends StateNotifier<Auth?> {
   }
 
   Future<void> _wipeLocal() async {
-    await _storage.deleteAll();
+    try { await _storage.deleteAll(); } catch (_) { /* best-effort */ }
     try { await wipeAllCaches(); } catch (_) {}
   }
 }
