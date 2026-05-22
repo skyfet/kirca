@@ -5,9 +5,8 @@ class AppColors {
   static const accent = Color(0xFFB46CFF);
   static const danger = Color(0xFFFF5C7A);
 
-  static const bgTop = Color(0xFF0E0C2A);
-  static const bgMid = Color(0xFF1B1546);
-  static const bgBottom = Color(0xFF0A0820);
+  static const background = Color(0xFF111128);
+  static const surface = Color(0xFF1A1A33);
 
   static const blobIndigo = Color(0xFF5B5BFF);
   static const blobViolet = Color(0xFFB46CFF);

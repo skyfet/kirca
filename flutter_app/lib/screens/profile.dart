@@ -187,7 +187,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                           ),
                           child: CircleAvatar(
                             radius: 50,
-                            backgroundColor: AppColors.bgMid,
+                            backgroundColor: AppColors.surface,
                             backgroundImage:
                                 avatar != null ? NetworkImage(avatar) : null,
                             child: avatar == null
@@ -244,6 +244,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             width: double.infinity,
                             height: 44,
                             glowColor: AppColors.accent,
+                            useOwnLayer: true,
+                            shape: LiquidRoundedSuperellipse(borderRadius: 12),
                             child: Center(
                               child: _saving
                                   ? const SizedBox(
@@ -271,6 +273,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       onTap: _logoutAll,
                       width: double.infinity,
                       height: 44,
+                      useOwnLayer: true,
+                      shape: LiquidRoundedSuperellipse(borderRadius: 12),
                       child: const Center(
                         child: Text(
                           'Выйти со всех устройств',
@@ -284,6 +288,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       width: double.infinity,
                       height: 44,
                       glowColor: AppColors.danger,
+                      useOwnLayer: true,
+                      shape: LiquidRoundedSuperellipse(borderRadius: 12),
                       child: const Center(
                         child: Text(
                           'Удалить аккаунт',
