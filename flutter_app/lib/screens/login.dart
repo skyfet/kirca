@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../api.dart';
 import '../state.dart';
+import '../theme/app_background.dart';
+import '../theme/app_theme.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -13,9 +16,11 @@ class LoginScreen extends ConsumerStatefulWidget {
 class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _u = TextEditingController();
   final _p = TextEditingController();
-  bool _isRegister = false;
+  int _mode = 0; // 0 = login, 1 = register
   bool _busy = false;
   String? _err;
+
+  bool get _isRegister => _mode == 1;
 
   @override
   void dispose() {
@@ -44,7 +49,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           );
     } on ApiException catch (e) {
       setState(() => _err = e.message);
-    } catch (e) {
+    } catch (_) {
       setState(() => _err = 'Не удалось подключиться к серверу');
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -53,45 +58,96 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text(_isRegister ? 'Регистрация' : 'Вход')),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TextField(
-                controller: _u,
-                autocorrect: false,
-                decoration: const InputDecoration(labelText: 'Имя пользователя'),
+    return GlassPage(
+      background: const AppBackground(),
+      statusBarStyle: GlassStatusBarStyle.light,
+      edgeToEdge: true,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+              child: GlassCard(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Kirca',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 30,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.4,
+                        color: AppColors.onGlass,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'тихий чат',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: AppColors.onGlassMuted, fontSize: 13),
+                    ),
+                    const SizedBox(height: 24),
+                    GlassSegmentedControl(
+                      segments: const ['Вход', 'Регистрация'],
+                      selectedIndex: _mode,
+                      onSegmentSelected: (i) => setState(() => _mode = i),
+                    ),
+                    const SizedBox(height: 20),
+                    GlassTextField(
+                      controller: _u,
+                      placeholder: 'Имя пользователя',
+                      prefixIcon: const Icon(Icons.alternate_email, size: 18),
+                      autofocus: true,
+                      textInputAction: TextInputAction.next,
+                    ),
+                    const SizedBox(height: 12),
+                    GlassPasswordField(
+                      controller: _p,
+                      placeholder: 'Пароль',
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: (_) => _submit(),
+                    ),
+                    if (_err != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        _err!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: AppColors.danger),
+                      ),
+                    ],
+                    const SizedBox(height: 20),
+                    GlassButton.custom(
+                      onTap: _busy ? () {} : _submit,
+                      width: double.infinity,
+                      height: 48,
+                      child: Center(
+                        child: _busy
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: AppColors.onGlass,
+                                ),
+                              )
+                            : Text(
+                                _isRegister ? 'Создать аккаунт' : 'Войти',
+                                style: const TextStyle(
+                                  color: AppColors.onGlass,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 15,
+                                ),
+                              ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _p,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'Пароль'),
-              ),
-              const SizedBox(height: 16),
-              if (_err != null)
-                Text(_err!, style: const TextStyle(color: Colors.red)),
-              const SizedBox(height: 8),
-              FilledButton(
-                onPressed: _busy ? null : _submit,
-                child: _busy
-                    ? const SizedBox(
-                        width: 18, height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Text(_isRegister ? 'Создать аккаунт' : 'Войти'),
-              ),
-              TextButton(
-                onPressed: () => setState(() => _isRegister = !_isRegister),
-                child: Text(_isRegister
-                    ? 'У меня уже есть аккаунт'
-                    : 'Создать новый аккаунт'),
-              ),
-            ],
+            ),
           ),
         ),
       ),

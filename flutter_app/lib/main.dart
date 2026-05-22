@@ -1,12 +1,23 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import 'state.dart';
 import 'screens/login.dart';
 import 'screens/rooms.dart';
+import 'theme/app_theme.dart';
 
-void main() {
-  runApp(const ProviderScope(child: App()));
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
+  await LiquidGlassWidgets.initialize();
+  runApp(
+    LiquidGlassWidgets.wrap(
+      adaptiveQuality: true,
+      child: const ProviderScope(child: App()),
+    ),
+  );
 }
 
 class App extends ConsumerWidget {
@@ -16,9 +27,9 @@ class App extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authProvider);
     return MaterialApp(
-      title: 'Chat',
+      title: 'Kirca',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
+      theme: buildAppTheme(),
       home: auth == null ? const LoginScreen() : const RoomsScreen(),
     );
   }

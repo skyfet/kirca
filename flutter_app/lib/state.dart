@@ -5,7 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'api.dart';
 import 'push.dart';
-import 'storage/outbox.dart';
+import 'storage/cache.dart';
 
 class Auth {
   final String token;
@@ -83,8 +83,73 @@ class AuthNotifier extends StateNotifier<Auth?> {
 
   Future<void> _wipeLocal() async {
     await _storage.deleteAll();
-    try { await Outbox.clear(); } catch (_) {}
+    try { await wipeAllCaches(); } catch (_) {}
   }
 }
 
 final authProvider = StateNotifierProvider<AuthNotifier, Auth?>((_) => AuthNotifier());
+
+// ---- data providers ------------------------------------------------------
+// Источник правды для UI — SQLite-кэш. REST-запросы лишь обновляют его.
+
+/// Список комнат — стрим над кэшем. UI рисует мгновенно из кэша на холодный
+/// старт; одновременно стартует фоновый refresh.
+final roomsProvider = StreamProvider<List<CachedRoom>>((ref) {
+  final auth = ref.watch(authProvider);
+  if (auth == null) {
+    return const Stream.empty();
+  }
+  // Фоновый refresh — не блокирует стрим.
+  Future<void>.microtask(() async {
+    try {
+      final list = await Api(token: auth.token).rooms();
+      await RoomsCache.replaceAll(list.cast<Map<String, dynamic>>());
+    } catch (_) { /* offline — рисуем из кэша */ }
+  });
+  return RoomsCache.watch();
+});
+
+final invitesProvider = StreamProvider<List<CachedInvite>>((ref) {
+  final auth = ref.watch(authProvider);
+  if (auth == null) {
+    return const Stream.empty();
+  }
+  Future<void>.microtask(() async {
+    try {
+      final list = await Api(token: auth.token).invites();
+      await InvitesCache.replaceAll(list.cast<Map<String, dynamic>>());
+    } catch (_) {}
+  });
+  return InvitesCache.watch();
+});
+
+final membersProvider = StreamProvider.autoDispose
+    .family<List<CachedMember>, String>((ref, roomId) {
+  final auth = ref.watch(authProvider);
+  if (auth == null) {
+    return const Stream.empty();
+  }
+  Future<void>.microtask(() async {
+    try {
+      final list = await Api(token: auth.token).members(roomId);
+      await MembersCache.replaceAll(roomId, list.cast<Map<String, dynamic>>());
+    } catch (_) {}
+  });
+  return MembersCache.watch(roomId);
+});
+
+final messagesProvider = StreamProvider.autoDispose
+    .family<List<CachedMessage>, String>((ref, roomId) {
+  final auth = ref.watch(authProvider);
+  if (auth == null) {
+    return const Stream.empty();
+  }
+  // Подгрузка истории фоном — стрим уже рисует из кэша.
+  Future<void>.microtask(() async {
+    try {
+      final h = await Api(token: auth.token).history(roomId);
+      await MessagesCache.upsertAll(roomId, h.cast<Map<String, dynamic>>());
+    } catch (_) {}
+  });
+  return MessagesCache.watch(roomId);
+});

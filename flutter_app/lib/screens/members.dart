@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../api.dart';
 import '../state.dart';
+import '../storage/cache.dart';
+import '../theme/app_background.dart';
+import '../theme/app_theme.dart';
 
 class MembersScreen extends ConsumerStatefulWidget {
   final String roomId;
@@ -20,46 +24,67 @@ class MembersScreen extends ConsumerStatefulWidget {
 }
 
 class _MembersScreenState extends ConsumerState<MembersScreen> {
-  List<dynamic> _members = [];
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-    setState(() => _loading = true);
-    try {
-      final list = await Api(token: auth.token).members(widget.roomId);
-      if (!mounted) return;
-      setState(() {
-        _members = list;
-        _loading = false;
-      });
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
   Future<void> _inviteByUsername() async {
     final ctrl = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Пригласить по username'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(prefixText: '@', hintText: 'username'),
+      barrierColor: Colors.black54,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: GlassCard(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Пригласить по username',
+                  style: TextStyle(
+                    color: AppColors.onGlass,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                GlassTextField(
+                  controller: ctrl,
+                  placeholder: 'username',
+                  prefixIcon: const Icon(Icons.alternate_email, size: 18),
+                  autofocus: true,
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: GlassButton.custom(
+                        onTap: () => Navigator.pop(ctx, false),
+                        height: 42,
+                        width: double.infinity,
+                        child: const Center(child: Text('Отмена', style: TextStyle(color: AppColors.onGlass))),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: GlassButton.custom(
+                        onTap: () => Navigator.pop(ctx, true),
+                        glowColor: AppColors.accent,
+                        height: 42,
+                        width: double.infinity,
+                        child: const Center(
+                          child: Text('Пригласить',
+                              style: TextStyle(color: AppColors.onGlass, fontWeight: FontWeight.w600)),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Пригласить')),
-        ],
       ),
     );
     if (ok != true) return;
@@ -70,7 +95,9 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
     try {
       await Api(token: auth.token).invite(widget.roomId, username: name);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Приглашение отправлено')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Приглашение отправлено')),
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -81,59 +108,115 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Участники · ${widget.roomName}'),
-        actions: [
-          if (!widget.isPublic)
-            IconButton(
-              tooltip: 'Пригласить',
-              icon: const Icon(Icons.person_add),
-              onPressed: _inviteByUsername,
-            ),
-        ],
-      ),
-      body: RefreshIndicator(
-        onRefresh: _load,
-        child: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : ListView.separated(
-                itemCount: _members.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (_, i) {
-                  final m = _members[i] as Map<String, dynamic>;
-                  final dn = (m['display_name'] as String?)?.trim();
-                  final un = m['username']?.toString() ?? '?';
-                  final online = m['online'] == true;
-                  final avatar = m['avatar_url'] as String?;
-                  return ListTile(
-                    leading: Stack(
-                      children: [
-                        CircleAvatar(
-                          backgroundImage: avatar != null ? NetworkImage(avatar) : null,
-                          child: avatar == null ? Text(un.characters.first.toUpperCase()) : null,
-                        ),
-                        if (online)
-                          Positioned(
-                            right: 0,
-                            bottom: 0,
-                            child: Container(
-                              width: 12,
-                              height: 12,
-                              decoration: BoxDecoration(
-                                color: Colors.green,
-                                shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white, width: 2),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                    title: Text(dn?.isNotEmpty == true ? dn! : un),
-                    subtitle: Text('@$un · ${m['role'] ?? ''}'),
-                  );
-                },
+    final async = ref.watch(membersProvider(widget.roomId));
+    return GlassPage(
+      background: const AppBackground(),
+      statusBarStyle: GlassStatusBarStyle.light,
+      edgeToEdge: true,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        extendBodyBehindAppBar: true,
+        appBar: GlassAppBar(
+          title: Text(
+            'Участники · ${widget.roomName}',
+            style: const TextStyle(color: AppColors.onGlass, fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          actions: [
+            if (!widget.isPublic)
+              GlassIconButton(
+                size: 36,
+                icon: const Icon(Icons.person_add_alt_1, color: AppColors.onGlass),
+                onPressed: _inviteByUsername,
               ),
+            const SizedBox(width: 8),
+          ],
+        ),
+        body: SafeArea(
+          child: async.when(
+            loading: () => const Center(child: GlassProgressIndicator.circular(size: 28)),
+            error: (e, _) => Center(child: Text('$e', style: const TextStyle(color: AppColors.danger))),
+            data: (members) {
+              if (members.isEmpty) {
+                return const Center(
+                  child: Text('Пока пусто', style: TextStyle(color: AppColors.onGlassMuted)),
+                );
+              }
+              return ListView.builder(
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 24),
+                itemCount: members.length,
+                itemBuilder: (_, i) => Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: _MemberTile(member: members[i]),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MemberTile extends StatelessWidget {
+  final CachedMember member;
+  const _MemberTile({required this.member});
+
+  @override
+  Widget build(BuildContext context) {
+    final dn = (member.displayName ?? '').trim();
+    final un = member.username;
+    return GlassCard(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Row(
+        children: [
+          Stack(
+            children: [
+              CircleAvatar(
+                radius: 22,
+                backgroundColor: AppColors.blobIndigo.withOpacity(0.5),
+                backgroundImage: member.avatarUrl != null
+                    ? NetworkImage(member.avatarUrl!)
+                    : null,
+                child: member.avatarUrl == null
+                    ? Text(
+                        un.isNotEmpty ? un.characters.first.toUpperCase() : '?',
+                        style: const TextStyle(color: AppColors.onGlass, fontWeight: FontWeight.w700),
+                      )
+                    : null,
+              ),
+              if (member.online)
+                Positioned(
+                  right: 0,
+                  bottom: 0,
+                  child: Container(
+                    width: 12,
+                    height: 12,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF34D399),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: const Color(0xFF1B1546), width: 2),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  dn.isNotEmpty ? dn : un,
+                  style: const TextStyle(color: AppColors.onGlass, fontWeight: FontWeight.w600),
+                ),
+                Text(
+                  '@$un${member.role.isNotEmpty ? " · ${member.role}" : ""}',
+                  style: const TextStyle(color: AppColors.onGlassDim, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
