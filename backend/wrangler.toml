@@ -24,11 +24,16 @@ database_id = "b5ddc653-b440-4cf2-94a4-61d1f6ef3be3"
 name = "ROOM"
 class_name = "Room"
 
-# Attachments bucket. Create with: `wrangler r2 bucket create kirca-attachments`.
-# Commented until the bucket exists — uploads are gated behind ATTACHMENTS binding presence.
-# [[r2_buckets]]
-# binding = "ATTACHMENTS"
-# bucket_name = "kirca-attachments"
+# Attachments bucket. One-time setup on Cloudflare:
+#   wrangler r2 bucket create kirca-attachments
+# For public URLs either attach a custom domain or enable the r2.dev dev-url:
+#   wrangler r2 bucket dev-url enable kirca-attachments
+# and paste the returned hostname (with https://) into R2_PUBLIC_BASE above.
+# Without R2_PUBLIC_BASE the worker still serves attachments via /attachments/:id
+# (authenticated), but the Flutter client prefers direct R2 URLs when available.
+[[r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "kirca-attachments"
 
 [[migrations]]
 tag = "v1"
@@ -59,6 +64,10 @@ database_id = "REPLACE_ME"
 [[env.staging.durable_objects.bindings]]
 name = "ROOM"
 class_name = "Room"
+
+[[env.staging.r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "kirca-attachments-staging"
 
 [[env.staging.migrations]]
 tag = "v1"
