@@ -32,6 +32,8 @@ workflows:
       flutter: stable
       xcode: latest
       cocoapods: default
+      groups:
+        - github
       vars:
         BUNDLE_ID: "ai.kirca.app"
         GH_REPO: "skyfet/kirca"
