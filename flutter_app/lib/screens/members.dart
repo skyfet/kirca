@@ -81,6 +81,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final auth = ref.watch(authProvider);
     return Scaffold(
       appBar: AppBar(
         title: Text('Участники · ${widget.roomName}'),
@@ -110,7 +111,12 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
                     leading: Stack(
                       children: [
                         CircleAvatar(
-                          backgroundImage: avatar != null ? NetworkImage(avatar) : null,
+                          backgroundImage: avatar != null
+                              ? NetworkImage(
+                                  resolveMediaUrl(avatar),
+                                  headers: mediaHeaders(auth?.token),
+                                )
+                              : null,
                           child: avatar == null ? Text(un.characters.first.toUpperCase()) : null,
                         ),
                         if (online)

@@ -63,7 +63,9 @@ export const readBody = z.object({
 
 export const uploadSignBody = z.object({
   mime: z.string().min(1).max(128),
-  size: z.number().int().positive().max(20 * 1024 * 1024), // 20 МБ
+  // Лимит совпадает с MAX_ATTACHMENT_BYTES в src/lib/r2.ts (800 КБ).
+  // Клиент обязан сжать изображение (JPEG q80, 1280px) до этой границы.
+  size: z.number().int().positive().max(800 * 1024),
   width: z.number().int().positive().optional(),
   height: z.number().int().positive().optional(),
 });

@@ -1,6 +1,5 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -60,16 +59,24 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     final auth = ref.read(authProvider);
     if (auth == null) return;
     final picker = ImagePicker();
-    final picked = await picker.pickImage(source: ImageSource.gallery, maxWidth: 1024, maxHeight: 1024);
+    final picked = await picker.pickImage(source: ImageSource.gallery);
     if (picked == null) return;
-    final bytes = await File(picked.path).readAsBytes();
-    final mime = _mimeFromPath(picked.path);
-    if (mime == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Неподдерживаемый формат')));
+    // Аватары жмём агрессивно: 512px, JPEG q75 — почти всегда укладывается в 50 КБ.
+    final bytes = await FlutterImageCompress.compressWithFile(
+      picked.path,
+      minWidth: 512,
+      minHeight: 512,
+      quality: 75,
+      format: CompressFormat.jpeg,
+    );
+    if (bytes == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Не удалось сжать изображение')));
+      }
       return;
     }
     try {
-      final r = await Api(token: auth.token).uploadAvatar(bytes, mime);
+      final r = await Api(token: auth.token).uploadAvatar(bytes, 'image/jpeg');
       setState(() {
         if (_profile != null) _profile = {..._profile!, 'avatar_url': r['avatar_url']};
       });
@@ -136,7 +143,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     onTap: _pickAvatar,
                     child: CircleAvatar(
                       radius: 48,
-                      backgroundImage: avatar != null ? NetworkImage(avatar) : null,
+                      backgroundImage: avatar != null
+                          ? NetworkImage(
+                              resolveMediaUrl(avatar),
+                              headers: mediaHeaders(auth?.token),
+                            )
+                          : null,
                       child: avatar == null
                           ? Text(
                               (auth?.username ?? '?').characters.first.toUpperCase(),
@@ -180,13 +192,4 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     );
   }
 
-  String? _mimeFromPath(String path) {
-    final p = path.toLowerCase();
-    if (p.endsWith('.jpg') || p.endsWith('.jpeg')) return 'image/jpeg';
-    if (p.endsWith('.png')) return 'image/png';
-    if (p.endsWith('.webp')) return 'image/webp';
-    if (p.endsWith('.gif')) return 'image/gif';
-    if (p.endsWith('.heic')) return 'image/heic';
-    return null;
-  }
 }

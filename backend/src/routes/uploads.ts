@@ -1,9 +1,7 @@
 import { getUser, requireAuth, uuid } from "../lib/middleware";
 import {
   ALLOWED_IMAGE_MIMES,
-  attachmentKey,
-  publicUrl,
-  r2Configured,
+  MAX_ATTACHMENT_BYTES,
 } from "../lib/r2";
 import {
   createApp,
@@ -18,6 +16,10 @@ import {
 import { uploadSignBody } from "../lib/schemas";
 
 export const uploadRoutes = createApp();
+
+// r2_key — историческое поле в таблице attachments (NOT NULL).
+// Сейчас байты лежат в attachment_blobs, поэтому в r2_key пишем сам id —
+// это уникальное непустое значение, не используется логикой.
 
 const reserveUploadRoute = createRoute({
   method: "post",
@@ -41,32 +43,30 @@ const reserveUploadRoute = createRoute({
     ),
     401: unauthorized,
     415: errorResponse("Unsupported mime."),
-    503: errorResponse("Uploads not configured."),
   },
 });
 
 uploadRoutes.openapi(reserveUploadRoute, async (c) => {
-  if (!r2Configured(c.env)) return c.json({ error: "uploads not configured" }, 503);
   const u = getUser(c);
   const { mime, size, width, height } = c.req.valid("json");
   if (!ALLOWED_IMAGE_MIMES.has(mime.toLowerCase())) {
     return c.json({ error: "unsupported mime" }, 415);
   }
   const id = uuid();
-  const key = attachmentKey(id, mime);
   const now = Date.now();
   await c.env.DB
     .prepare(
       `INSERT INTO attachments (id, user_id, r2_key, mime, size, width, height, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(id, u.id, key, mime, size, width ?? null, height ?? null, now)
+    .bind(id, u.id, id, mime, size, width ?? null, height ?? null, now)
     .run();
   return c.json(
     {
       id,
       upload_url: `/uploads/${id}`,
-      public_url: publicUrl(c.env, key),
+      // Без R2/CDN прямого URL нет — клиент тянет через /attachments/:id с авторизацией.
+      public_url: null,
     },
     200,
   );
@@ -89,23 +89,25 @@ const putUploadRoute = createRoute({
     403: errorResponse("Not the owner."),
     404: notFound,
     409: errorResponse("Already uploaded."),
+    413: errorResponse("Body exceeds D1 BLOB limit."),
     415: errorResponse("Mime mismatch."),
-    503: errorResponse("Uploads not configured."),
   },
 });
 
 uploadRoutes.openapi(putUploadRoute, async (c) => {
-  if (!r2Configured(c.env)) return c.json({ error: "uploads not configured" }, 503);
   const u = getUser(c);
   const { id } = c.req.valid("param");
   const att = await c.env.DB
-    .prepare("SELECT id, user_id, r2_key, mime, size FROM attachments WHERE id = ?")
+    .prepare("SELECT id, user_id, mime, size FROM attachments WHERE id = ?")
     .bind(id)
-    .first<{ id: string; user_id: string; r2_key: string; mime: string; size: number }>();
+    .first<{ id: string; user_id: string; mime: string; size: number }>();
   if (!att) return c.json({ error: "not found" }, 404);
   if (att.user_id !== u.id) return c.json({ error: "forbidden" }, 403);
-  const head = await c.env.ATTACHMENTS!.head(att.r2_key);
-  if (head) return c.json({ error: "already uploaded" }, 409);
+  const existing = await c.env.DB
+    .prepare("SELECT 1 AS x FROM attachment_blobs WHERE attachment_id = ?")
+    .bind(id)
+    .first<{ x: number }>();
+  if (existing) return c.json({ error: "already uploaded" }, 409);
 
   const ct = c.req.header("Content-Type") ?? "";
   if (ct.toLowerCase() !== att.mime.toLowerCase()) {
@@ -115,12 +117,19 @@ uploadRoutes.openapi(putUploadRoute, async (c) => {
   if (!len || len !== att.size) {
     return c.json({ error: "content-length mismatch" }, 400);
   }
-  const body = c.req.raw.body;
-  if (!body) return c.json({ error: "empty body" }, 400);
-  await c.env.ATTACHMENTS!.put(att.r2_key, body, {
-    httpMetadata: { contentType: att.mime },
-  });
-  return c.json({ ok: true, public_url: publicUrl(c.env, att.r2_key) }, 200);
+  if (len > MAX_ATTACHMENT_BYTES) {
+    return c.json({ error: "too large" }, 413);
+  }
+  const buf = await c.req.raw.arrayBuffer();
+  if (buf.byteLength === 0) return c.json({ error: "empty body" }, 400);
+  if (buf.byteLength !== att.size) {
+    return c.json({ error: "content-length mismatch" }, 400);
+  }
+  await c.env.DB
+    .prepare("INSERT INTO attachment_blobs (attachment_id, bytes) VALUES (?, ?)")
+    .bind(id, buf)
+    .run();
+  return c.json({ ok: true, public_url: null }, 200);
 });
 
 const downloadAttachmentRoute = createRoute({
@@ -129,7 +138,7 @@ const downloadAttachmentRoute = createRoute({
   tags: ["devices"],
   summary: "Download an attachment via the worker",
   description:
-    "Use when the bucket has no public domain. Requires access to a room that references this attachment.",
+    "Streams the bytes from D1. Requires access to a room that references this attachment.",
   middleware: [requireAuth] as const,
   request: { params: z.object({ id: z.string() }) },
   responses: {
@@ -137,18 +146,16 @@ const downloadAttachmentRoute = createRoute({
     401: unauthorized,
     403: forbidden,
     404: notFound,
-    503: errorResponse("Uploads not configured."),
   },
 });
 
 uploadRoutes.openapi(downloadAttachmentRoute, async (c) => {
-  if (!r2Configured(c.env)) return c.json({ error: "uploads not configured" }, 503);
   const u = getUser(c);
   const { id } = c.req.valid("param");
   const att = await c.env.DB
-    .prepare("SELECT r2_key, mime FROM attachments WHERE id = ?")
+    .prepare("SELECT mime FROM attachments WHERE id = ?")
     .bind(id)
-    .first<{ r2_key: string; mime: string }>();
+    .first<{ mime: string }>();
   if (!att) return c.json({ error: "not found" }, 404);
   const access = await c.env.DB
     .prepare(
@@ -162,9 +169,12 @@ uploadRoutes.openapi(downloadAttachmentRoute, async (c) => {
     .first<{ x: number }>();
   if (!access) return c.json({ error: "forbidden" }, 403);
 
-  const obj = await c.env.ATTACHMENTS!.get(att.r2_key);
-  if (!obj) return c.json({ error: "not found" }, 404);
-  return new Response(obj.body, {
+  const row = await c.env.DB
+    .prepare("SELECT bytes FROM attachment_blobs WHERE attachment_id = ?")
+    .bind(id)
+    .first<{ bytes: ArrayBuffer }>();
+  if (!row) return c.json({ error: "not found" }, 404);
+  return new Response(row.bytes, {
     headers: {
       "Content-Type": att.mime,
       "Cache-Control": "public, max-age=31536000, immutable",

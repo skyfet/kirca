@@ -18,6 +18,19 @@ void registerUnauthorizedHandler(ForceLogout fn) {
   _onUnauthorized = fn;
 }
 
+/// Превращает url, полученный с бэкенда, в абсолютный.
+/// Сервер отдаёт `/attachments/<id>` и `/users/<id>/avatar?v=<ts>`
+/// (R2 не используется — байты лежат в D1 BLOB).
+String resolveMediaUrl(String url) {
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  return '${Config.apiBase}$url';
+}
+
+/// Заголовки для запроса картинок через Image.network / NetworkImage.
+/// Без них сервер вернёт 401 — все эндпоинты вложений требуют сессию.
+Map<String, String> mediaHeaders(String? token) =>
+    token == null ? const {} : {'Authorization': 'Bearer $token'};
+
 class Api {
   final String? token;
   Api({this.token});

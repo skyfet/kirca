@@ -5,15 +5,11 @@ compatibility_flags = ["nodejs_compat"]
 
 # Non-secret APNs config. The secret (APNS_KEY) is set via `wrangler secret put APNS_KEY`.
 # If these values are empty, push notifications are silently disabled.
-# R2_PUBLIC_BASE — public URL prefix for the attachments bucket (r2.dev or custom domain),
-# no trailing slash. Empty means uploads are still allowed but URLs are returned as null
-# and the client must use /attachments/:id via the worker (authenticated).
 [vars]
 APNS_TEAM_ID = ""
 APNS_KEY_ID = ""
 APNS_BUNDLE_ID = "ai.kirca.app"
 APNS_HOST = "api.push.apple.com"
-R2_PUBLIC_BASE = ""
 
 [[d1_databases]]
 binding = "DB"
@@ -24,16 +20,9 @@ database_id = "b5ddc653-b440-4cf2-94a4-61d1f6ef3be3"
 name = "ROOM"
 class_name = "Room"
 
-# Attachments bucket. One-time setup on Cloudflare:
-#   wrangler r2 bucket create kirca-attachments
-# For public URLs either attach a custom domain or enable the r2.dev dev-url:
-#   wrangler r2 bucket dev-url enable kirca-attachments
-# and paste the returned hostname (with https://) into R2_PUBLIC_BASE above.
-# Without R2_PUBLIC_BASE the worker still serves attachments via /attachments/:id
-# (authenticated), but the Flutter client prefers direct R2 URLs when available.
-[[r2_buckets]]
-binding = "ATTACHMENTS"
-bucket_name = "kirca-attachments"
+# Attachments (images, avatars) are stored as BLOBs in D1 — R2 is not used.
+# Client must compress before upload (see flutter_app/lib/screens/chat.dart);
+# server enforces hard size limits in src/lib/r2.ts.
 
 [[migrations]]
 tag = "v1"
@@ -54,7 +43,6 @@ APNS_TEAM_ID = ""
 APNS_KEY_ID = ""
 APNS_BUNDLE_ID = "ai.kirca.app"
 APNS_HOST = "api.sandbox.push.apple.com"
-R2_PUBLIC_BASE = ""
 
 [[env.staging.d1_databases]]
 binding = "DB"
@@ -64,10 +52,6 @@ database_id = "REPLACE_ME"
 [[env.staging.durable_objects.bindings]]
 name = "ROOM"
 class_name = "Room"
-
-[[env.staging.r2_buckets]]
-binding = "ATTACHMENTS"
-bucket_name = "kirca-attachments-staging"
 
 [[env.staging.migrations]]
 tag = "v1"

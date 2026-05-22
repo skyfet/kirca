@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -518,13 +518,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     final auth = ref.read(authProvider);
     if (auth == null) return;
     final picker = ImagePicker();
-    final picked = await picker.pickImage(source: ImageSource.gallery, maxWidth: 2048, maxHeight: 2048);
+    final picked = await picker.pickImage(source: ImageSource.gallery);
     if (picked == null) return;
-    final bytes = await File(picked.path).readAsBytes();
-    final mime = _mimeFromPath(picked.path);
-    if (mime == null) {
+    // Сжатие на клиенте: re-encode в JPEG q80, max 1280px по большей стороне.
+    // Без этого крупное фото с iPhone не пройдёт серверный лимит (800 КБ).
+    final compressed = await FlutterImageCompress.compressWithFile(
+      picked.path,
+      minWidth: 1280,
+      minHeight: 1280,
+      quality: 80,
+      format: CompressFormat.jpeg,
+    );
+    if (compressed == null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Неподдерживаемый формат')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Не удалось сжать изображение')));
+      }
+      return;
+    }
+    final bytes = compressed;
+    const mime = 'image/jpeg';
+    if (bytes.length > 800 * 1024) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Изображение слишком большое после сжатия')));
       }
       return;
     }
@@ -535,28 +550,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
       );
       final uploadUrl = reserved['upload_url']?.toString();
       final attachmentId = reserved['id']?.toString();
-      final publicUrl = reserved['public_url']?.toString();
       if (uploadUrl == null || attachmentId == null) return;
       await Api(token: auth.token).uploadBytes(uploadUrl, bytes, mime);
       _sendCore(
         attachmentId: attachmentId,
-        attPreview: _Attachment(id: attachmentId, url: publicUrl, mime: mime),
+        attPreview: _Attachment(id: attachmentId, url: '/attachments/$attachmentId', mime: mime),
       );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
       }
     }
-  }
-
-  String? _mimeFromPath(String path) {
-    final p = path.toLowerCase();
-    if (p.endsWith('.jpg') || p.endsWith('.jpeg')) return 'image/jpeg';
-    if (p.endsWith('.png')) return 'image/png';
-    if (p.endsWith('.webp')) return 'image/webp';
-    if (p.endsWith('.gif')) return 'image/gif';
-    if (p.endsWith('.heic')) return 'image/heic';
-    return null;
   }
 
   Future<void> _editMsg(_Msg m) async {
@@ -653,7 +657,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
 
   @override
   Widget build(BuildContext context) {
-    final me = ref.watch(authProvider)?.userId;
+    final auth = ref.watch(authProvider);
+    final me = auth?.userId;
     final typingNames = _peerTyping.length;
     return Scaffold(
       appBar: AppBar(
@@ -731,7 +736,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
                               child: ClipRRect(
                                 borderRadius: BorderRadius.circular(8),
                                 child: Image.network(
-                                  m.attachment!.url!,
+                                  resolveMediaUrl(m.attachment!.url!),
+                                  headers: mediaHeaders(auth?.token),
                                   width: 220,
                                   fit: BoxFit.cover,
                                   errorBuilder: (_, __, ___) => const Icon(Icons.broken_image),

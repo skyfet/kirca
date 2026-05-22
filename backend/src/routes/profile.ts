@@ -9,7 +9,7 @@ import {
   z,
 } from "../lib/openapi";
 import { profileUpdateBody } from "../lib/schemas";
-import { ALLOWED_IMAGE_MIMES, avatarKey, publicUrl, r2Configured } from "../lib/r2";
+import { ALLOWED_IMAGE_MIMES, MAX_AVATAR_BYTES } from "../lib/r2";
 import type { Env } from "../lib/types";
 
 export const profileRoutes = createApp();
@@ -99,7 +99,9 @@ const avatarRoute = createRoute({
   path: "/me/avatar",
   tags: ["auth"],
   summary: "Upload avatar image",
-  description: "PUT body is the raw image (max 5MB, image/jpeg|png|webp|gif|heic).",
+  description:
+    "PUT body is the raw image (image/jpeg|png|webp|gif|heic). " +
+    "Stored in D1 BLOB; client must compress (256 KB max).",
   middleware: [requireAuth] as const,
   responses: {
     200: jsonContent(z.object({ avatar_url: z.string().nullable() }), "Avatar uploaded."),
@@ -107,32 +109,69 @@ const avatarRoute = createRoute({
     401: unauthorized,
     413: errorResponse("Too large."),
     415: errorResponse("Unsupported mime."),
-    503: errorResponse("Uploads not configured."),
   },
 });
 
 profileRoutes.openapi(avatarRoute, async (c) => {
-  if (!r2Configured(c.env)) return c.json({ error: "uploads not configured" }, 503);
   const mime = c.req.header("Content-Type") ?? "";
   if (!ALLOWED_IMAGE_MIMES.has(mime.toLowerCase())) {
     return c.json({ error: "unsupported mime" }, 415);
   }
   const len = parseInt(c.req.header("Content-Length") ?? "0", 10);
-  if (!len || len > 5 * 1024 * 1024) {
-    return c.json({ error: "avatar too large (max 5MB)" }, 413);
+  if (!len) return c.json({ error: "empty body" }, 400);
+  if (len > MAX_AVATAR_BYTES) {
+    return c.json({ error: "avatar too large" }, 413);
   }
   const u = getUser(c);
-  const key = avatarKey(u.id, mime);
-  const body = c.req.raw.body;
-  if (!body) return c.json({ error: "empty body" }, 400);
-  await c.env.ATTACHMENTS!.put(key, body, {
-    httpMetadata: { contentType: mime },
-  });
-  const url = publicUrl(c.env, key);
-  if (url) {
-    await c.env.DB.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").bind(url, u.id).run();
+  const buf = await c.req.raw.arrayBuffer();
+  if (buf.byteLength === 0) return c.json({ error: "empty body" }, 400);
+  if (buf.byteLength > MAX_AVATAR_BYTES) {
+    return c.json({ error: "avatar too large" }, 413);
   }
-  return c.json({ avatar_url: url ?? null }, 200);
+  const now = Date.now();
+  // INSERT OR REPLACE — у каждого пользователя одна строка с аватаром.
+  await c.env.DB
+    .prepare(
+      "INSERT OR REPLACE INTO user_avatars (user_id, bytes, mime, updated_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(u.id, buf, mime, now)
+    .run();
+  // avatar_url — относительный путь с cache-buster'ом по updated_at.
+  // Клиент подставляет apiBase и шлёт Authorization.
+  const url = `/users/${u.id}/avatar?v=${now}`;
+  await c.env.DB.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").bind(url, u.id).run();
+  return c.json({ avatar_url: url }, 200);
+});
+
+const getAvatarRoute = createRoute({
+  method: "get",
+  path: "/users/{id}/avatar",
+  tags: ["auth"],
+  summary: "Download a user's avatar",
+  description: "Streams bytes from D1. Any authenticated user can fetch any avatar.",
+  middleware: [requireAuth] as const,
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { description: "Binary.", content: { "application/octet-stream": { schema: z.string() } } },
+    401: unauthorized,
+    404: notFound,
+  },
+});
+
+profileRoutes.openapi(getAvatarRoute, async (c) => {
+  const { id } = c.req.valid("param");
+  const row = await c.env.DB
+    .prepare("SELECT bytes, mime FROM user_avatars WHERE user_id = ?")
+    .bind(id)
+    .first<{ bytes: ArrayBuffer; mime: string }>();
+  if (!row) return c.json({ error: "not found" }, 404);
+  return new Response(row.bytes, {
+    headers: {
+      "Content-Type": row.mime,
+      // Cache-buster в query param (?v=ts) — иммутабельный кеш для каждой версии.
+      "Cache-Control": "public, max-age=31536000, immutable",
+    },
+  });
 });
 
 const deleteMeRoute = createRoute({

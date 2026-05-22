@@ -10,7 +10,6 @@ import {
   z,
 } from "../lib/openapi";
 import { messageEditBody, readBody } from "../lib/schemas";
-import type { Env } from "../lib/types";
 
 export const messageRoutes = createApp();
 
@@ -23,7 +22,6 @@ const HISTORY_SELECT = `
     m.edited_at, m.deleted_at,
     m.attachment_id,
     a.mime AS attachment_mime,
-    a.r2_key AS attachment_key,
     a.width AS attachment_width,
     a.height AS attachment_height
   FROM messages m
@@ -44,7 +42,7 @@ const MessageSchema = z
   })
   .openapi("Message");
 
-function shapeMessage(env: Env, row: Record<string, unknown>): Record<string, unknown> {
+function shapeMessage(row: Record<string, unknown>): Record<string, unknown> {
   const base = {
     id: row.id,
     client_id: row.client_id,
@@ -56,14 +54,13 @@ function shapeMessage(env: Env, row: Record<string, unknown>): Record<string, un
     deleted_at: row.deleted_at ?? null,
   };
   if (row.attachment_id) {
-    const key = row.attachment_key as string;
-    const base_url = env.R2_PUBLIC_BASE?.replace(/\/+$/, "") ?? null;
     return {
       ...base,
       attachment: {
         id: row.attachment_id,
         mime: row.attachment_mime,
-        url: base_url ? `${base_url}/${key}` : null,
+        // Относительный путь — клиент подставляет apiBase + Authorization.
+        url: `/attachments/${row.attachment_id}`,
         width: row.attachment_width ?? null,
         height: row.attachment_height ?? null,
       },
@@ -115,7 +112,7 @@ messageRoutes.openapi(historyRoute, async (c) => {
       .bind(roomId, ts, limit)
       .all();
     return c.json(
-      { messages: (results as Array<Record<string, unknown>>).map((r) => shapeMessage(c.env, r)) } as never,
+      { messages: (results as Array<Record<string, unknown>>).map((r) => shapeMessage(r)) } as never,
       200,
     );
   }
@@ -132,7 +129,7 @@ messageRoutes.openapi(historyRoute, async (c) => {
       {
         messages: (results as Array<Record<string, unknown>>)
           .reverse()
-          .map((r) => shapeMessage(c.env, r)),
+          .map((r) => shapeMessage(r)),
       } as never,
       200,
     );
@@ -148,7 +145,7 @@ messageRoutes.openapi(historyRoute, async (c) => {
     {
       messages: (results as Array<Record<string, unknown>>)
         .reverse()
-        .map((r) => shapeMessage(c.env, r)),
+        .map((r) => shapeMessage(r)),
     } as never,
     200,
   );

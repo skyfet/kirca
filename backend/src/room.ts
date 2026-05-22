@@ -4,7 +4,6 @@ import { logError } from "./lib/log";
 
 type Env = ApnsEnv & {
   DB: D1Database;
-  R2_PUBLIC_BASE?: string;
 };
 
 type Attachment = {
@@ -224,15 +223,15 @@ export class Room extends DurableObject<Env> {
   ): Promise<Record<string, unknown> | null> {
     if (!attachmentId) return null;
     const a = await this.env.DB
-      .prepare("SELECT id, mime, r2_key, width, height FROM attachments WHERE id = ?")
+      .prepare("SELECT id, mime, width, height FROM attachments WHERE id = ?")
       .bind(attachmentId)
-      .first<{ id: string; mime: string; r2_key: string; width: number | null; height: number | null }>();
+      .first<{ id: string; mime: string; width: number | null; height: number | null }>();
     if (!a) return null;
-    const base = this.env.R2_PUBLIC_BASE?.replace(/\/+$/, "") ?? null;
     return {
       id: a.id,
       mime: a.mime,
-      url: base ? `${base}/${a.r2_key}` : null,
+      // Относительный путь — клиент подставляет apiBase и шлёт Authorization.
+      url: `/attachments/${a.id}`,
       width: a.width,
       height: a.height,
     };
