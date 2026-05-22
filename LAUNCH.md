@@ -14,7 +14,7 @@
 - [ ] Аккаунт Cloudflare с подключённым **Workers Paid** ($5/мес) — без этого Durable Objects не работают.
 - [ ] Репозиторий `skyfet/kirca` с правом push.
 - [ ] Аккаунт **Codemagic** с подключённой репой (или GitHub Actions + mac-runner, но в этой репе настроен Codemagic).
-- [ ] (опционально) Аккаунт **Apple Developer** для настоящих APNs-ключей. Без него push поедет через Scarlet и **может молча не работать** — это известный риск, см. `DEPLOY.md`.
+- [ ] (опционально) Аккаунт **Apple Developer** для настоящих APNs-ключей. Без него push на устройствах с нестандартной подписью **может молча не работать** — это известный риск, см. `DEPLOY.md`.
 - [ ] (опционально) **UptimeRobot** / cron-monitor для `/healthz`.
 
 Ничего из этого пока не настраиваем — просто убеждаемся, что доступ есть.
@@ -149,11 +149,11 @@ npm run deploy && npm run deploy:staging
 ### 3.4. Проверка push
 
 1. Сборка Flutter с реальным `aps-environment=production` (entitlements уже патчатся CI, см. `codemagic.yaml` → "Apply iOS patches").
-2. На iPhone установи апку (Scarlet) → залогинься → разреши push.
+2. На iPhone установи апку → залогинься → разреши push.
 3. Со второго аккаунта отправь сообщение в общую комнату, когда первый в фоне.
 4. Должен прилететь push.
 
-⚠️ **Известное ограничение Scarlet**: подпись Scarlet ≠ Apple Dev, и APNs может не отдать device token. Если push не работает — сначала собери через настоящий Apple Dev (TestFlight/Ad-hoc) и проверь там; если работает в TestFlight, но не в Scarlet — это ожидаемо, не баг бэкенда.
+⚠️ **Известное ограничение sideload-подписи**: подпись стороннего sideload-инструмента ≠ Apple Dev, и APNs может не отдать device token. Если push не работает — сначала собери через настоящий Apple Dev (TestFlight/Ad-hoc) и проверь там; если работает в TestFlight, но не при sideload — это ожидаемо, не баг бэкенда.
 
 ---
 
@@ -166,33 +166,23 @@ npm run deploy && npm run deploy:staging
    - Должен быть зелёный коннект (OAuth).
    - Если нет — создай GitHub PAT с правом `repo`, положи в App settings → Environment variables как `GITHUB_TOKEN` (Secure).
 
-**Проверка:** dummy-commit в `main` → Codemagic стартует workflow `ios-scarlet` → через ~10 минут в `github.com/skyfet/kirca/releases` появляется `build-1` с `kirca.ipa` и `scarlet-source.json`.
+**Проверка:** dummy-commit в `main` → Codemagic стартует workflow `ios-unsigned` → через ~10 минут в `github.com/skyfet/kirca/releases` появляется `build-1` с `kirca.ipa`.
 
-### 4.2. Иконка приложения **(один раз)**
+### 4.2. Стабильная ссылка для тестеров **(один раз)**
 
-`scarlet-source.json` ссылается на `${BASE}/icon.png`, но `icon.png` сейчас **не публикуется** релизом. Варианты:
-
-- Самый простой: добавить `icon.png` (1024×1024 PNG) в `flutter_app/`, прокинуть его в `artifact_patterns` codemagic.yaml и в публикацию релиза.
-- Или убрать `"iconURL"` / `"repoIcon"` из generation step (Scarlet это переживёт).
-
-Минимум сделать второе — иначе в Scarlet будет битая иконка.
-
-### 4.3. Scarlet-репозиторий для тестеров **(один раз)**
-
-После первого успешного релиза в Scarlet добавляется URL:
+После первого успешного релиза тестерам отдаёшь прямой URL на IPA:
 ```
-https://github.com/skyfet/kirca/releases/latest/download/scarlet-source.json
+https://github.com/skyfet/kirca/releases/latest/download/kirca.ipa
 ```
 
-Этот URL **стабилен** — Scarlet сам видит каждый новый релиз. Отдаёшь его тестерам в любом мессенджере.
+Этот URL **стабилен** — `latest` сам указывает на свежий релиз. Тестеры скачивают и ставят любым удобным sideload-инструментом (AltStore / Sideloadly / etc).
 
-### 4.4. Проверка установки
+### 4.3. Проверка установки
 
 На чистом iPhone:
-1. Поставить Scarlet (см. usescarlet.com).
-2. Settings → Sources → Add → вставить ссылку выше.
-3. Apps tab → kirca → Get.
-4. Открыть, зарегаться, отправить сообщение в default room.
+1. Скачать `kirca.ipa` по ссылке выше.
+2. Установить через выбранный sideload-инструмент.
+3. Открыть, зарегаться, отправить сообщение в default room.
 
 ---
 
@@ -281,10 +271,10 @@ Cloudflare Dashboard → Billing → **Notifications** → включить aler
 1. Финальный merge `dev` → `main` (если работал в `dev`).
 2. Дождаться зелёного `Deploy Backend` workflow + e2e Newman.
 3. Дождаться Codemagic-релиза `build-N`.
-4. Открыть Scarlet на тестовом iPhone, обновить kirca до `build-N`, прогнать smoke (раздел 5.3).
-5. **Запостить ссылку** на Scarlet-репу:
+4. На тестовом iPhone скачать новый `kirca.ipa`, переставить и прогнать smoke (раздел 5.3).
+5. **Запостить ссылку** на IPA:
    ```
-   https://github.com/skyfet/kirca/releases/latest/download/scarlet-source.json
+   https://github.com/skyfet/kirca/releases/latest/download/kirca.ipa
    ```
 
 ---

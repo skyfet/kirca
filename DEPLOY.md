@@ -73,15 +73,13 @@ flutter build ios --release --no-codesign \
 
 Если значения пустые — воркер тихо пропускает push (никаких 500), удобно для локалки.
 
-⚠️ **Scarlet и APNs.** IPA, подписанный Scarlet, использует свой профиль (не Apple Dev). Push **может не работать** — это известный риск. Если упрётся: бэкенд продолжит работать без пушей; в `wrangler.toml` можно переключить `APNS_HOST` на `api.sandbox.push.apple.com` и попробовать. Гарантия push'а — настоящий Apple Developer-аккаунт.
+⚠️ **Не-Apple-Dev подпись и APNs.** Если IPA устанавливается через сторонний sideload-инструмент со своим профилем (не Apple Dev), push **может не работать** — это известный риск. Если упрётся: бэкенд продолжит работать без пушей; в `wrangler.toml` можно переключить `APNS_HOST` на `api.sandbox.push.apple.com` и попробовать. Гарантия push'а — настоящий Apple Developer-аккаунт.
 
-## Flutter (iOS) — Codemagic → unsigned IPA → GitHub Releases → Scarlet
+## Flutter (iOS) — Codemagic → unsigned IPA → GitHub Releases
 
 Конфиг в `codemagic.yaml` (в корне репы).
 
-**Никакого Apple Developer аккаунта не нужно.** IPA собирается без подписи и публикуется как GitHub Release. Тестеры ставят через [Scarlet](https://usescarlet.com): добавляют URL `scarlet-source.json` → видят kirca → жмут Install. Scarlet сам подписывает у себя на устройстве.
-
-⚠️ Сертификаты Scarlet регулярно отзывает Apple (раз в 1–4 недели). Апка временно перестаёт открываться, пока Scarlet не подменит новый. Норм для тестирования, не для прода.
+**Никакого Apple Developer аккаунта не нужно для CI.** IPA собирается без подписи и публикуется как GitHub Release. Тестеры скачивают `kirca.ipa` и ставят любым удобным sideload-инструментом (например, AltStore / Sideloadly) — он подписывает приложение своим профилем на устройстве.
 
 ### Build шаги (по порядку)
 
@@ -90,8 +88,7 @@ flutter build ios --release --no-codesign \
 3. `flutter pub get`.
 4. `flutter build ios --release --no-codesign` с `--build-number=$BUILD_NUMBER`.
 5. Zip `Runner.app` в `kirca.ipa`.
-6. Генерация `scarlet-source.json` с текущей версией и стабильным URL `releases/latest/download/...`.
-7. Codemagic создаёт GitHub Release с тегом `build-<N>` и прикладывает оба файла.
+6. Codemagic создаёт GitHub Release с тегом `build-<N>` и прикладывает `kirca.ipa`.
 
 ### Что настроить один раз
 
@@ -101,21 +98,19 @@ flutter build ios --release --no-codesign \
    - Если нет: создай GitHub PAT с правом `repo`, положи в env var `GITHUB_TOKEN` (App settings → Environment variables, mark Secure).
 3. Push в `main` → билд → новый Release появится в `github.com/skyfet/kirca/releases`.
 
-### Стабильные ссылки после первого билда
+### Стабильная ссылка после первого билда
 
 ```
-IPA:          https://github.com/skyfet/kirca/releases/latest/download/kirca.ipa
-Scarlet repo: https://github.com/skyfet/kirca/releases/latest/download/scarlet-source.json
+IPA: https://github.com/skyfet/kirca/releases/latest/download/kirca.ipa
 ```
 
-«latest» автоматически указывает на последний релиз, так что URL **не меняется** между билдами — Scarlet сам подтянет новую версию.
+«latest» автоматически указывает на последний релиз, так что URL **не меняется** между билдами.
 
 ### Установка на iPhone (тестер)
 
-1. Поставить Scarlet (см. [usescarlet.com](https://usescarlet.com)).
-2. В Scarlet: Settings → Sources → Add → вставь `https://github.com/skyfet/kirca/releases/latest/download/scarlet-source.json`.
-3. Apps tab → kirca → Get.
-4. После каждого push в `main` Scarlet увидит новую версию автоматом.
+1. Скачать `kirca.ipa` с GitHub Releases (ссылка выше).
+2. Установить через любой sideload-инструмент с компьютера или iPhone.
+3. Запустить kirca.
 
 ## Альтернатива для Flutter: GitHub Actions + Fastlane
 

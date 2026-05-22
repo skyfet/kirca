@@ -1,16 +1,44 @@
-import { Hono } from "hono";
-import { validator } from "../lib/validator";
-
 import { getUser, isRoomAccessible, requireAuth, uuid } from "../lib/middleware";
+import {
+  createApp,
+  createRoute,
+  errorResponse,
+  forbidden,
+  jsonContent,
+  notFound,
+  unauthorized,
+  z,
+} from "../lib/openapi";
 import { createRoomBody, inviteCreateBody, muteBody } from "../lib/schemas";
-import type { Env, Vars } from "../lib/types";
 
-export const roomRoutes = new Hono<{ Bindings: Env; Variables: Vars }>();
+export const roomRoutes = createApp();
+
+const RoomSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    is_public: z
+      .union([z.number().int(), z.boolean()])
+      .describe("1/true if anyone can join via POST /rooms/{id}/join."),
+  })
+  .openapi("Room");
 
 // ---- list ----
-roomRoutes.get("/rooms", requireAuth, async (c) => {
+const listRoomsRoute = createRoute({
+  method: "get",
+  path: "/rooms",
+  tags: ["rooms"],
+  summary: "List visible rooms",
+  description: "Returns all public rooms plus private rooms where the user is a member.",
+  middleware: [requireAuth] as const,
+  responses: {
+    200: jsonContent(z.object({ rooms: z.array(RoomSchema) }), "OK."),
+    401: unauthorized,
+  },
+});
+
+roomRoutes.openapi(listRoomsRoute, async (c) => {
   const u = getUser(c);
-  // К списку добавляем флаги membership и unread-счётчик для бейджа.
   const { results } = await c.env.DB
     .prepare(
       `SELECT
@@ -33,10 +61,28 @@ roomRoutes.get("/rooms", requireAuth, async (c) => {
     )
     .bind(u.id, u.id, u.id)
     .all();
-  return c.json({ rooms: results });
+  return c.json({ rooms: results } as never, 200);
 });
 
-roomRoutes.post("/rooms", requireAuth, validator("json", createRoomBody), async (c) => {
+const createRoomRoute = createRoute({
+  method: "post",
+  path: "/rooms",
+  tags: ["rooms"],
+  summary: "Create a room",
+  description:
+    "Caller becomes the owner. Public by default — set `is_public: false` for a private room.",
+  middleware: [requireAuth] as const,
+  request: {
+    body: { required: true, content: { "application/json": { schema: createRoomBody } } },
+  },
+  responses: {
+    200: jsonContent(RoomSchema, "Created."),
+    400: errorResponse("Missing name."),
+    401: unauthorized,
+  },
+});
+
+roomRoutes.openapi(createRoomRoute, async (c) => {
   const u = getUser(c);
   const { name, is_public } = c.req.valid("json");
   const isPublic = is_public === false ? 0 : 1;
@@ -54,12 +100,28 @@ roomRoutes.post("/rooms", requireAuth, validator("json", createRoomBody), async 
     )
     .bind(u.id, id, "owner", now)
     .run();
-  return c.json({ id, name: name.trim(), is_public: isPublic === 1 });
+  return c.json({ id, name: name.trim(), is_public: isPublic === 1 }, 200);
 });
 
-roomRoutes.post("/rooms/:id/join", requireAuth, async (c) => {
+const joinRoomRoute = createRoute({
+  method: "post",
+  path: "/rooms/{id}/join",
+  tags: ["rooms"],
+  summary: "Join a public room",
+  description: "Only works for public rooms. For private rooms the owner must add you out-of-band.",
+  middleware: [requireAuth] as const,
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    200: jsonContent(z.object({ ok: z.boolean() }), "Joined (idempotent)."),
+    401: unauthorized,
+    403: errorResponse("Room is private."),
+    404: errorResponse("Room not found."),
+  },
+});
+
+roomRoutes.openapi(joinRoomRoute, async (c) => {
   const u = getUser(c);
-  const roomId = c.req.param("id");
+  const { id: roomId } = c.req.valid("param");
   const room = await c.env.DB
     .prepare("SELECT is_public FROM rooms WHERE id = ?")
     .bind(roomId)
@@ -72,13 +134,27 @@ roomRoutes.post("/rooms/:id/join", requireAuth, async (c) => {
     )
     .bind(u.id, roomId, Date.now())
     .run();
-  return c.json({ ok: true });
+  return c.json({ ok: true }, 200);
 });
 
-roomRoutes.post("/rooms/:id/leave", requireAuth, async (c) => {
+const leaveRoomRoute = createRoute({
+  method: "post",
+  path: "/rooms/{id}/leave",
+  tags: ["rooms"],
+  summary: "Leave a room (non-owner)",
+  middleware: [requireAuth] as const,
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    204: { description: "Left." },
+    401: unauthorized,
+    404: errorResponse("Not a member."),
+    409: errorResponse("Owner cannot leave."),
+  },
+});
+
+roomRoutes.openapi(leaveRoomRoute, async (c) => {
   const u = getUser(c);
-  const roomId = c.req.param("id");
-  // owner не уходит просто так — пока упрощённо запрещаем, чтобы комната не осталась без хозяина.
+  const { id: roomId } = c.req.valid("param");
   const m = await c.env.DB
     .prepare("SELECT role FROM memberships WHERE user_id = ? AND room_id = ?")
     .bind(u.id, roomId)
@@ -89,14 +165,30 @@ roomRoutes.post("/rooms/:id/leave", requireAuth, async (c) => {
     .prepare("DELETE FROM memberships WHERE user_id = ? AND room_id = ?")
     .bind(u.id, roomId)
     .run();
-  return new Response(null, { status: 204 });
+  return c.body(null, 204);
 });
 
 // ---- members + presence ----
-// Online считается через DO: GET туда, он отвечает списком user_id. Без DO — все offline.
-roomRoutes.get("/rooms/:id/members", requireAuth, async (c) => {
+const membersRoute = createRoute({
+  method: "get",
+  path: "/rooms/{id}/members",
+  tags: ["rooms"],
+  summary: "List members and online state",
+  middleware: [requireAuth] as const,
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: jsonContent(
+      z.object({ members: z.array(z.record(z.unknown())) }),
+      "Members with role, joined_at, online flag.",
+    ),
+    401: unauthorized,
+    403: errorResponse("No access."),
+  },
+});
+
+roomRoutes.openapi(membersRoute, async (c) => {
   const u = getUser(c);
-  const roomId = c.req.param("id");
+  const { id: roomId } = c.req.valid("param");
   if (!(await isRoomAccessible(c.env, roomId, u.id))) {
     return c.json({ error: "forbidden" }, 403);
   }
@@ -110,7 +202,6 @@ roomRoutes.get("/rooms/:id/members", requireAuth, async (c) => {
     .bind(roomId)
     .all();
 
-  // Спрашиваем у DO, кто из них онлайн.
   let online: Set<string> = new Set();
   try {
     const stub = c.env.ROOM.get(c.env.ROOM.idFromName(roomId));
@@ -125,13 +216,30 @@ roomRoutes.get("/rooms/:id/members", requireAuth, async (c) => {
     ...m,
     online: online.has(m.id as string),
   }));
-  return c.json({ members });
+  return c.json({ members } as never, 200);
 });
 
 // ---- per-membership mute ----
-roomRoutes.patch("/rooms/:id/membership", requireAuth, validator("json", muteBody), async (c) => {
+const muteRoute = createRoute({
+  method: "patch",
+  path: "/rooms/{id}/membership",
+  tags: ["rooms"],
+  summary: "Mute / unmute room for the current user",
+  middleware: [requireAuth] as const,
+  request: {
+    params: z.object({ id: z.string() }),
+    body: { required: true, content: { "application/json": { schema: muteBody } } },
+  },
+  responses: {
+    200: jsonContent(z.object({ muted: z.boolean() }), "OK."),
+    401: unauthorized,
+    404: errorResponse("Not a member."),
+  },
+});
+
+roomRoutes.openapi(muteRoute, async (c) => {
   const u = getUser(c);
-  const roomId = c.req.param("id");
+  const { id: roomId } = c.req.valid("param");
   const { muted } = c.req.valid("json");
   const m = await c.env.DB
     .prepare("SELECT 1 AS x FROM memberships WHERE user_id = ? AND room_id = ?")
@@ -142,20 +250,39 @@ roomRoutes.patch("/rooms/:id/membership", requireAuth, validator("json", muteBod
     .prepare("UPDATE memberships SET muted = ? WHERE user_id = ? AND room_id = ?")
     .bind(muted ? 1 : 0, u.id, roomId)
     .run();
-  return c.json({ muted });
+  return c.json({ muted }, 200);
 });
 
 // ---- invites ----
-// Создаёт invite в приватную комнату (member или owner может пригласить).
-roomRoutes.post("/rooms/:id/invites", requireAuth, validator("json", inviteCreateBody), async (c) => {
+const createInviteRoute = createRoute({
+  method: "post",
+  path: "/rooms/{id}/invites",
+  tags: ["rooms"],
+  summary: "Invite a user to a private room",
+  description: "Inviter must be a member. Body: `{username}` or `{user_id}`.",
+  middleware: [requireAuth] as const,
+  request: {
+    params: z.object({ id: z.string() }),
+    body: { required: true, content: { "application/json": { schema: inviteCreateBody } } },
+  },
+  responses: {
+    200: jsonContent(z.record(z.unknown()), "Invite created."),
+    400: errorResponse("Self-invite."),
+    401: unauthorized,
+    403: errorResponse("Not a member."),
+    404: errorResponse("Room or user not found."),
+    409: errorResponse("Public room / already member / already invited."),
+  },
+});
+
+roomRoutes.openapi(createInviteRoute, async (c) => {
   const u = getUser(c);
-  const roomId = c.req.param("id");
+  const { id: roomId } = c.req.valid("param");
   const room = await c.env.DB
     .prepare("SELECT is_public FROM rooms WHERE id = ?")
     .bind(roomId)
     .first<{ is_public: number }>();
   if (!room) return c.json({ error: "not found" }, 404);
-  // Приглашать в публичную не нужно.
   if (room.is_public === 1) return c.json({ error: "room is public" }, 409);
 
   const isMember = await c.env.DB
@@ -165,7 +292,6 @@ roomRoutes.post("/rooms/:id/invites", requireAuth, validator("json", inviteCreat
   if (!isMember) return c.json({ error: "forbidden" }, 403);
 
   const body = c.req.valid("json");
-  // Найти invitee по username, если он не передан как user_id.
   let inviteeId = body.user_id ?? null;
   if (!inviteeId && body.username) {
     const row = await c.env.DB
@@ -178,7 +304,6 @@ roomRoutes.post("/rooms/:id/invites", requireAuth, validator("json", inviteCreat
   if (!inviteeId) return c.json({ error: "user not found" }, 404);
   if (inviteeId === u.id) return c.json({ error: "cannot invite yourself" }, 400);
 
-  // Уже участник?
   const already = await c.env.DB
     .prepare("SELECT 1 AS x FROM memberships WHERE user_id = ? AND room_id = ?")
     .bind(inviteeId, roomId)
@@ -195,15 +320,31 @@ roomRoutes.post("/rooms/:id/invites", requireAuth, validator("json", inviteCreat
       )
       .bind(id, roomId, u.id, inviteeId, now)
       .run();
-  } catch (e) {
-    // Уникальный индекс по (room_id, invitee_user_id) WHERE status='pending'.
+  } catch {
     return c.json({ error: "already invited" }, 409);
   }
-  return c.json({ id, room_id: roomId, invitee_user_id: inviteeId, status: "pending", created_at: now });
+  return c.json(
+    { id, room_id: roomId, invitee_user_id: inviteeId, status: "pending", created_at: now } as never,
+    200,
+  );
 });
 
-// Свои входящие приглашения.
-roomRoutes.get("/invites", requireAuth, async (c) => {
+const listInvitesRoute = createRoute({
+  method: "get",
+  path: "/invites",
+  tags: ["rooms"],
+  summary: "List pending invites for the current user",
+  middleware: [requireAuth] as const,
+  responses: {
+    200: jsonContent(
+      z.object({ invites: z.array(z.record(z.unknown())) }),
+      "List of invites with room and inviter info.",
+    ),
+    401: unauthorized,
+  },
+});
+
+roomRoutes.openapi(listInvitesRoute, async (c) => {
   const u = getUser(c);
   const { results } = await c.env.DB
     .prepare(
@@ -219,12 +360,27 @@ roomRoutes.get("/invites", requireAuth, async (c) => {
     )
     .bind(u.id)
     .all();
-  return c.json({ invites: results });
+  return c.json({ invites: results } as never, 200);
 });
 
-roomRoutes.post("/invites/:id/accept", requireAuth, async (c) => {
+const acceptInviteRoute = createRoute({
+  method: "post",
+  path: "/invites/{id}/accept",
+  tags: ["rooms"],
+  summary: "Accept a pending invite",
+  middleware: [requireAuth] as const,
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: jsonContent(z.record(z.unknown()), "Joined."),
+    401: unauthorized,
+    404: notFound,
+    409: errorResponse("Already responded."),
+  },
+});
+
+roomRoutes.openapi(acceptInviteRoute, async (c) => {
   const u = getUser(c);
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   const inv = await c.env.DB
     .prepare("SELECT id, room_id, invitee_user_id, status FROM invites WHERE id = ?")
     .bind(id)
@@ -242,30 +398,61 @@ roomRoutes.post("/invites/:id/accept", requireAuth, async (c) => {
     .prepare("UPDATE invites SET status = 'accepted', responded_at = ? WHERE id = ?")
     .bind(now, id)
     .run();
-  return c.json({ ok: true, room_id: inv.room_id });
+  return c.json({ ok: true, room_id: inv.room_id } as never, 200);
 });
 
-roomRoutes.post("/invites/:id/decline", requireAuth, async (c) => {
+const declineInviteRoute = createRoute({
+  method: "post",
+  path: "/invites/{id}/decline",
+  tags: ["rooms"],
+  summary: "Decline a pending invite",
+  middleware: [requireAuth] as const,
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: jsonContent(z.object({ ok: z.boolean() }), "Declined."),
+    401: unauthorized,
+    404: notFound,
+  },
+});
+
+roomRoutes.openapi(declineInviteRoute, async (c) => {
   const u = getUser(c);
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   const now = Date.now();
   const res = await c.env.DB
-    .prepare("UPDATE invites SET status = 'declined', responded_at = ? WHERE id = ? AND invitee_user_id = ? AND status = 'pending'")
+    .prepare(
+      "UPDATE invites SET status = 'declined', responded_at = ? WHERE id = ? AND invitee_user_id = ? AND status = 'pending'",
+    )
     .bind(now, id, u.id)
     .run();
   if ((res.meta.changes ?? 0) === 0) return c.json({ error: "not found" }, 404);
-  return c.json({ ok: true });
+  return c.json({ ok: true }, 200);
 });
 
-// Inviter может отозвать своё приглашение.
-roomRoutes.delete("/invites/:id", requireAuth, async (c) => {
+const revokeInviteRoute = createRoute({
+  method: "delete",
+  path: "/invites/{id}",
+  tags: ["rooms"],
+  summary: "Revoke an invite you created",
+  middleware: [requireAuth] as const,
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    204: { description: "Revoked." },
+    401: unauthorized,
+    404: notFound,
+  },
+});
+
+roomRoutes.openapi(revokeInviteRoute, async (c) => {
   const u = getUser(c);
-  const id = c.req.param("id");
+  const { id } = c.req.valid("param");
   const now = Date.now();
   const res = await c.env.DB
-    .prepare("UPDATE invites SET status = 'revoked', responded_at = ? WHERE id = ? AND inviter_user_id = ? AND status = 'pending'")
+    .prepare(
+      "UPDATE invites SET status = 'revoked', responded_at = ? WHERE id = ? AND inviter_user_id = ? AND status = 'pending'",
+    )
     .bind(now, id, u.id)
     .run();
   if ((res.meta.changes ?? 0) === 0) return c.json({ error: "not found" }, 404);
-  return new Response(null, { status: 204 });
+  return c.body(null, 204);
 });
