@@ -25,9 +25,7 @@ Future<void> _shot(WidgetTester tester, String name) async {
     }
     node.visitChildren(visit);
   }
-  WidgetsBinding.instance.renderViewElement!
-      .findRenderObject()!
-      .visitChildren(visit);
+  tester.binding.renderViews.first.visitChildren(visit);
   if (rb == null) {
     // ignore: avoid_print
     print('no RenderRepaintBoundary for $name');
@@ -73,7 +71,17 @@ const _kActionsToHide = <SemanticsAction>{
 String _escape(String s) =>
     s.replaceAll('\\', r'\\').replaceAll('"', r'\"').replaceAll('\n', r'\n');
 
-String? _formatNode(SemanticsNode node) {
+String _hexColor(Color c) {
+  final int v = c.toARGB32();
+  return '#${v.toRadixString(16).padLeft(8, '0').toUpperCase()}';
+}
+
+String _rectStr(Rect r) {
+  return '@[${r.left.toStringAsFixed(0)},${r.top.toStringAsFixed(0)} '
+      '${r.width.toStringAsFixed(0)}x${r.height.toStringAsFixed(0)}]';
+}
+
+String? _formatNode(SemanticsNode node, Rect globalRect) {
   if (node.isMergedIntoParent) return null;
 
   final SemanticsData data = node.getSemanticsData();
@@ -148,11 +156,25 @@ String? _formatNode(SemanticsNode node) {
     sb.write(' scroll=$pos/$max');
   }
 
+  if (!globalRect.isEmpty) {
+    sb.write(' ');
+    sb.write(_rectStr(globalRect));
+  }
+
   return sb.toString();
 }
 
-void _writeNode(StringBuffer buf, SemanticsNode node, int depth) {
-  final String? line = _formatNode(node);
+void _writeNode(
+  StringBuffer buf,
+  SemanticsNode node,
+  int depth,
+  Matrix4 parentTransform,
+) {
+  final Matrix4 current = node.transform == null
+      ? parentTransform
+      : (Matrix4.copy(parentTransform)..multiply(node.transform!));
+  final Rect globalRect = MatrixUtils.transformRect(current, node.rect);
+  final String? line = _formatNode(node, globalRect);
   final int childDepth = line == null ? depth : depth + 1;
   if (line != null) {
     buf.write('  ' * depth);
@@ -161,7 +183,7 @@ void _writeNode(StringBuffer buf, SemanticsNode node, int depth) {
   final children =
       node.debugListChildrenInOrder(DebugSemanticsDumpOrder.traversalOrder);
   for (final child in children) {
-    _writeNode(buf, child, childDepth);
+    _writeNode(buf, child, childDepth, current);
   }
 }
 
@@ -180,7 +202,7 @@ Future<void> _dumpSemantics(WidgetTester tester, String name) async {
     if (root == null) {
       sb.writeln('(no semantics tree — handle inactive?)');
     } else {
-      _writeNode(sb, root, 0);
+      _writeNode(sb, root, 0, Matrix4.identity());
     }
     viewIndex++;
   }
@@ -191,9 +213,190 @@ Future<void> _dumpSemantics(WidgetTester tester, String name) async {
   print('saved ${f.path}');
 }
 
+// ---------------------------------------------------------------------------
+// Style dump
+//
+// Walks the *Element* tree (which has BuildContext and resolved Themes) and
+// emits one line per paint-significant widget: Text + its effective style,
+// Icon + tint, Container/DecoratedBox/Material backgrounds + radii.
+// Every line gets the on-screen rect, so layout is reconstructable.
+//
+// File: `NN-name.styles.txt`, next to the semantics dump.
+// ---------------------------------------------------------------------------
+
+Rect? _globalRect(RenderObject? r) {
+  if (r is! RenderBox || !r.hasSize || !r.attached) return null;
+  final Offset tl = r.localToGlobal(Offset.zero);
+  return tl & r.size;
+}
+
+String _textStyleSummary(TextStyle s) {
+  final parts = <String>[];
+  if (s.fontFamily != null && s.fontFamily!.isNotEmpty) parts.add(s.fontFamily!);
+  if (s.fontSize != null) parts.add('${s.fontSize!.toStringAsFixed(0)}px');
+  final FontWeight? w = s.fontWeight;
+  if (w != null && w != FontWeight.normal) parts.add('w${w.value}');
+  if (s.fontStyle == FontStyle.italic) parts.add('italic');
+  if (s.color != null) parts.add(_hexColor(s.color!));
+  if (s.decoration != null && s.decoration != TextDecoration.none) {
+    parts.add(s.decoration.toString().replaceAll('TextDecoration.', ''));
+  }
+  if (s.height != null) parts.add('lh${s.height!.toStringAsFixed(2)}');
+  if (s.letterSpacing != null && s.letterSpacing != 0) {
+    parts.add('ls${s.letterSpacing!.toStringAsFixed(1)}');
+  }
+  return parts.isEmpty ? '' : ' ${parts.join(' ')}';
+}
+
+String? _formatBorderRadius(BorderRadiusGeometry? br) {
+  if (br == null) return null;
+  if (br is BorderRadius) {
+    final r = br.topLeft.x;
+    if (br.topLeft == br.topRight &&
+        br.topLeft == br.bottomLeft &&
+        br.topLeft == br.bottomRight) {
+      return 'radius=${r.toStringAsFixed(0)}';
+    }
+    return 'radius=${br.topLeft.x.toStringAsFixed(0)}/${br.topRight.x.toStringAsFixed(0)}/'
+        '${br.bottomRight.x.toStringAsFixed(0)}/${br.bottomLeft.x.toStringAsFixed(0)}';
+  }
+  return 'radius=$br';
+}
+
+String? _formatStyleLine(Element el) {
+  final Widget widget = el.widget;
+  final Rect? rect = _globalRect(el.findRenderObject());
+
+  if (widget is Text) {
+    final String text = widget.data ?? '';
+    if (text.isEmpty || rect == null || rect.isEmpty) return null;
+    final TextStyle base = DefaultTextStyle.of(el).style;
+    final TextStyle effective =
+        widget.style == null ? base : base.merge(widget.style);
+    return 'Text "${_escape(text)}"${_textStyleSummary(effective)} ${_rectStr(rect)}';
+  }
+
+  if (widget is RichText) {
+    if (rect == null || rect.isEmpty) return null;
+    final String text = widget.text.toPlainText().trim();
+    if (text.isEmpty) return null;
+    final TextStyle? style = widget.text.style;
+    return 'RichText "${_escape(text)}"${style == null ? '' : _textStyleSummary(style)} ${_rectStr(rect)}';
+  }
+
+  if (widget is Icon) {
+    final List<String> parts = ['Icon'];
+    final IconData? ic = widget.icon;
+    if (ic != null) {
+      parts.add('${ic.fontFamily ?? "?"}/0x${ic.codePoint.toRadixString(16)}');
+    }
+    if (widget.size != null) parts.add('${widget.size!.toStringAsFixed(0)}px');
+    if (widget.color != null) parts.add(_hexColor(widget.color!));
+    var line = parts.join(' ');
+    if (rect != null && !rect.isEmpty) line += ' ${_rectStr(rect)}';
+    return line;
+  }
+
+  if (widget is Container) {
+    final parts = <String>['Container'];
+    final Decoration? dec = widget.decoration;
+    if (dec is BoxDecoration) {
+      if (dec.color != null) parts.add('bg=${_hexColor(dec.color!)}');
+      final String? br = _formatBorderRadius(dec.borderRadius);
+      if (br != null) parts.add(br);
+      if (dec.border != null) parts.add('border');
+      if (dec.boxShadow != null && dec.boxShadow!.isNotEmpty) parts.add('shadow');
+      if (dec.gradient != null) parts.add('gradient');
+    } else if (widget.color != null) {
+      parts.add('bg=${_hexColor(widget.color!)}');
+    }
+    if (parts.length == 1) return null;
+    if (rect != null && !rect.isEmpty) parts.add(_rectStr(rect));
+    return parts.join(' ');
+  }
+
+  if (widget is DecoratedBox) {
+    final Decoration dec = widget.decoration;
+    if (dec is! BoxDecoration) return null;
+    final parts = <String>['DecoratedBox'];
+    if (dec.color != null) parts.add('bg=${_hexColor(dec.color!)}');
+    final String? br = _formatBorderRadius(dec.borderRadius);
+    if (br != null) parts.add(br);
+    if (dec.border != null) parts.add('border');
+    if (dec.boxShadow != null && dec.boxShadow!.isNotEmpty) parts.add('shadow');
+    if (dec.gradient != null) parts.add('gradient');
+    if (parts.length == 1) return null;
+    if (rect != null && !rect.isEmpty) parts.add(_rectStr(rect));
+    return parts.join(' ');
+  }
+
+  if (widget is Material) {
+    final parts = <String>['Material'];
+    if (widget.color != null) parts.add('bg=${_hexColor(widget.color!)}');
+    if (widget.elevation != 0) {
+      parts.add('elev=${widget.elevation.toStringAsFixed(0)}');
+    }
+    final ShapeBorder? shape = widget.shape;
+    if (shape is RoundedRectangleBorder) {
+      final String? br = _formatBorderRadius(shape.borderRadius);
+      if (br != null) parts.add(br);
+    } else if (shape is CircleBorder) {
+      parts.add('circle');
+    }
+    if (parts.length == 1) return null;
+    if (rect != null && !rect.isEmpty) parts.add(_rectStr(rect));
+    return parts.join(' ');
+  }
+
+  if (widget is Card) {
+    final parts = <String>['Card'];
+    if (widget.color != null) parts.add('bg=${_hexColor(widget.color!)}');
+    if (widget.elevation != null) {
+      parts.add('elev=${widget.elevation!.toStringAsFixed(0)}');
+    }
+    if (rect != null && !rect.isEmpty) parts.add(_rectStr(rect));
+    return parts.join(' ');
+  }
+
+  if (widget is ColoredBox) {
+    if (rect == null || rect.isEmpty) return null;
+    return 'ColoredBox bg=${_hexColor(widget.color)} ${_rectStr(rect)}';
+  }
+
+  return null;
+}
+
+void _walkForStyle(StringBuffer buf, Element el, int depth) {
+  final String? line = _formatStyleLine(el);
+  final int childDepth = line == null ? depth : depth + 1;
+  if (line != null) {
+    buf.write('  ' * depth);
+    buf.writeln(line);
+  }
+  el.visitChildren((child) => _walkForStyle(buf, child, childDepth));
+}
+
+Future<void> _dumpStyles(WidgetTester tester, String name) async {
+  await tester.pump();
+
+  final sb = StringBuffer()..writeln('# $name (styles)');
+  final Element? root = tester.binding.rootElement;
+  if (root == null) {
+    sb.writeln('(no root element)');
+  } else {
+    _walkForStyle(sb, root, 0);
+  }
+
+  final f = File('${_outDir.path}/$name.styles.txt');
+  await f.writeAsString(sb.toString());
+  // ignore: avoid_print
+  print('saved ${f.path}');
+}
+
 Future<void> _capture(WidgetTester tester, String name) async {
   await _shot(tester, name);
   await _dumpSemantics(tester, name);
+  await _dumpStyles(tester, name);
 }
 
 Future<void> _settle(WidgetTester tester,
