@@ -458,7 +458,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         controller: ctrl,
         autofocus: true,
         maxLines: 4,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       ),
       actions: [
         GlassDialogAction(label: 'Отмена', onPressed: () => Navigator.pop(context, false)),
@@ -692,7 +692,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                           textInputAction: TextInputAction.send,
                           onChanged: _onTextChanged,
                           onSubmitted: (_) => _send(),
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         ),
                       ),
                       const SizedBox(width: 6),

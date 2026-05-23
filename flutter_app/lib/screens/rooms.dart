@@ -52,7 +52,7 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
                     controller: ctrl,
                     placeholder: 'Название',
                     autofocus: true,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   ),
                   const SizedBox(height: 12),
                   Row(
