@@ -1,11 +1,13 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:kirca/main.dart' as app;
 
@@ -366,6 +368,9 @@ String? _formatStyleLine(Element el) {
   return null;
 }
 
+bool _isStyleLeaf(Widget w) =>
+    w is Text || w is RichText || w is Icon || w is ColoredBox;
+
 void _walkForStyle(StringBuffer buf, Element el, int depth) {
   final String? line = _formatStyleLine(el);
   final int childDepth = line == null ? depth : depth + 1;
@@ -373,6 +378,9 @@ void _walkForStyle(StringBuffer buf, Element el, int depth) {
     buf.write('  ' * depth);
     buf.writeln(line);
   }
+  // Skip children of leaf widgets — Text and Icon both wrap a RichText that
+  // would otherwise emit a near-duplicate line.
+  if (_isStyleLeaf(el.widget)) return;
   el.visitChildren((child) => _walkForStyle(buf, child, childDepth));
 }
 
@@ -400,14 +408,17 @@ Future<void> _capture(WidgetTester tester, String name) async {
 }
 
 Future<void> _settle(WidgetTester tester,
-    {Duration timeout = const Duration(seconds: 5)}) async {
-  try {
-    await tester.pumpAndSettle(const Duration(milliseconds: 100), EnginePhase.sendSemanticsUpdate, timeout);
-  } catch (_) {
-    // pump several frames to drain pending animations / streams.
-    for (var i = 0; i < 30; i++) {
-      await tester.pump(const Duration(milliseconds: 100));
-    }
+    {Duration timeout = const Duration(seconds: 3)}) async {
+  // Fixed-frame pump instead of pumpAndSettle: the app's LiquidGlass
+  // PerformanceMonitor schedules a frame callback every tick, so under
+  // LiveTestWidgetsFlutterBinding pumpAndSettle never converges (and unlike
+  // the offline binding it does not reliably throw — the whole test then
+  // hangs at the very first _settle call after app.main()).
+  const Duration frame = Duration(milliseconds: 50);
+  final int frames =
+      (timeout.inMilliseconds / frame.inMilliseconds).ceil().clamp(10, 400);
+  for (var i = 0; i < frames; i++) {
+    await tester.pump(frame);
   }
 }
 
@@ -422,11 +433,31 @@ void main() {
   setUpAll(() async {
     _outDir = Directory('integration_test/screenshots');
     if (!_outDir.existsSync()) _outDir.createSync(recursive: true);
+
+    // flutter_secure_storage on Linux talks to libsecret over D-Bus. In this
+    // sandbox there is no session bus, and `.read()` hangs forever (no error,
+    // no timeout — AuthNotifier._load() never returns, the first frame never
+    // builds, and tester.pump() blocks). Mock the plugin channel to return
+    // null for every call; the app then starts with no saved auth.
+    const MethodChannel storageChannel =
+        MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(storageChannel, (call) async => null);
   });
 
   testWidgets('e2e flow: login → rooms → chat → members → profile',
       (tester) async {
-    app.main();
+    // Mirror app.main() but skip LiquidGlassWidgets.wrap(adaptiveQuality:true).
+    // The adaptive scope benchmarks ~180 real frames before settling — under
+    // LiveTestWidgetsFlutterBinding that loop never converges and the very
+    // first tester.pump() hangs forever (no exception, no timeout).
+    WidgetsFlutterBinding.ensureInitialized();
+    if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+      sqfliteFfiInit();
+      databaseFactory = databaseFactoryFfi;
+    }
+    SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
+    runApp(const ProviderScope(child: app.App()));
     await _settle(tester);
     await _capture(tester, '01-login');
 
