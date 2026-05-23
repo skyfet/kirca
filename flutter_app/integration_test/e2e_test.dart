@@ -4,10 +4,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:kirca/main.dart' as app;
 
@@ -447,17 +445,9 @@ void main() {
 
   testWidgets('e2e flow: login → rooms → chat → members → profile',
       (tester) async {
-    // Mirror app.main() but skip LiquidGlassWidgets.wrap(adaptiveQuality:true).
-    // The adaptive scope benchmarks ~180 real frames before settling — under
-    // LiveTestWidgetsFlutterBinding that loop never converges and the very
-    // first tester.pump() hangs forever (no exception, no timeout).
-    WidgetsFlutterBinding.ensureInitialized();
-    if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
-      sqfliteFfiInit();
-      databaseFactory = databaseFactoryFfi;
-    }
-    SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
-    runApp(const ProviderScope(child: app.App()));
+    // On Linux app.main() resolves to LiquidGlass `basic` mode (no adaptive
+    // benchmark), so it runs cleanly under LiveTestWidgetsFlutterBinding.
+    await app.main();
     await _settle(tester);
     await _capture(tester, '01-login');
 
