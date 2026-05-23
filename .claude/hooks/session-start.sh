@@ -7,7 +7,7 @@ FLUTTER_VERSION="${FLUTTER_VERSION:-3.44.0}"
 FLUTTER_DIR="${FLUTTER_DIR:-/opt/flutter}"
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 
-# ── 1. system deps ───────────────────────────────────────────────────────────
+# ── 1. system deps (best-effort; Flutter analyze/test work without these) ───
 need_apt=(
   # Linux desktop build (flutter drive -d linux)
   clang cmake ninja-build pkg-config
@@ -20,17 +20,59 @@ need_apt=(
   curl ca-certificates tar xz-utils git
 )
 
-if command -v apt-get >/dev/null 2>&1; then
+# Some base images ship third-party PPAs (deadsnakes, ondrej/php, etc.) that
+# may 403 or have rotated signing keys. Disable any apt source that fails the
+# next `apt-get update` and retry once.
+disable_failing_apt_sources() {
+  local err=$1
+  local url f
+  # Extract every URL that appears next to an E:/W: line in apt's stderr.
+  grep -oE "https?://[^ ']+" "$err" 2>/dev/null | sort -u | while IFS= read -r url; do
+    [ -z "$url" ] && continue
+    # Strip trailing path segments down to the repository root so the grep below matches.
+    for prefix in "$url" "${url%/dists/*}" "${url%/}/"; do
+      for f in /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
+        [ -f "$f" ] || continue
+        if grep -qF "$prefix" "$f"; then
+          echo ">>> disabling broken apt source $f (matched $prefix)"
+          mv -- "$f" "$f.disabled-by-claude"
+        fi
+      done
+    done
+  done
+}
+
+install_apt_deps() {
+  command -v apt-get >/dev/null 2>&1 || return 0
   export DEBIAN_FRONTEND=noninteractive
-  missing=()
+
+  local missing=()
   for pkg in "${need_apt[@]}"; do
     dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
   done
-  if [ "${#missing[@]}" -gt 0 ]; then
-    apt-get update -qq
-    apt-get install -y --no-install-recommends "${missing[@]}"
+  [ "${#missing[@]}" -eq 0 ] && return 0
+
+  local err
+  err=$(mktemp)
+  if ! apt-get update 2>"$err" >/dev/null; then
+    disable_failing_apt_sources "$err"
+    apt-get update -qq 2>"$err" >/dev/null || {
+      echo ">>> apt-get update still failing — skipping system deps install"
+      cat "$err" >&2
+      rm -f "$err"
+      return 0
+    }
   fi
-fi
+  rm -f "$err"
+
+  apt-get install -y --no-install-recommends "${missing[@]}" || {
+    echo ">>> apt-get install failed; some Linux-desktop deps missing" \
+         "(Flutter analyze/test still work, only integration_test on Linux affected)"
+    return 0
+  }
+}
+
+install_apt_deps || true
 
 # ── 2. Flutter SDK ───────────────────────────────────────────────────────────
 if [ ! -x "$FLUTTER_DIR/bin/flutter" ]; then
