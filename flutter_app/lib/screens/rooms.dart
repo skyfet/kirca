@@ -52,6 +52,8 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
                     controller: ctrl,
                     placeholder: 'Название',
                     autofocus: true,
+                    height: 36,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
                   ),
                   const SizedBox(height: 12),
                   Row(
@@ -144,7 +146,9 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
       background: const AppBackground(),
       statusBarStyle: GlassStatusBarStyle.light,
       edgeToEdge: true,
-      child: Scaffold(
+      child: AdaptiveLiquidGlassLayer(
+        clipBehavior: Clip.none,
+        child: Scaffold(
         backgroundColor: Colors.transparent,
         extendBodyBehindAppBar: true,
         extendBody: true,
@@ -247,6 +251,7 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
             ],
           ),
         ),
+        ),
       ),
     );
   }
@@ -301,7 +306,7 @@ class _RoomTile extends ConsumerWidget {
       children: [
         GlassCard(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: _RoomTileContent(room: room),
+          child: RoomTileContent(room: room),
         ),
         Positioned.fill(
           child: Material(
@@ -332,9 +337,9 @@ class _RoomTile extends ConsumerWidget {
   }
 }
 
-class _RoomTileContent extends StatelessWidget {
+class RoomTileContent extends StatelessWidget {
   final CachedRoom room;
-  const _RoomTileContent({required this.room});
+  const RoomTileContent({super.key, required this.room});
 
   @override
   Widget build(BuildContext context) {

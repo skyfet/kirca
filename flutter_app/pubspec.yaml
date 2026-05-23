@@ -14,13 +14,19 @@ dependencies:
   flutter_riverpod: ^2.6.1
   flutter_secure_storage: ^9.2.2
   sqflite: ^2.3.0
+  sqflite_common_ffi: ^2.3.3
   path: ^1.9.0
   path_provider: ^2.1.4
   image_picker: ^1.1.2
   liquid_glass_widgets: ^0.12.2
+  cupertino_icons: ^1.0.8
 
 dev_dependencies:
   flutter_lints: ^4.0.0
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
 
 flutter:
   uses-material-design: true

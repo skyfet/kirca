@@ -54,6 +54,8 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
                   placeholder: 'username',
                   prefixIcon: const Icon(Icons.alternate_email, size: 18),
                   autofocus: true,
+                  height: 36,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
                 ),
                 const SizedBox(height: 16),
                 Row(
@@ -117,7 +119,9 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
       background: const AppBackground(),
       statusBarStyle: GlassStatusBarStyle.light,
       edgeToEdge: true,
-      child: Scaffold(
+      child: AdaptiveLiquidGlassLayer(
+        clipBehavior: Clip.none,
+        child: Scaffold(
         backgroundColor: Colors.transparent,
         extendBodyBehindAppBar: true,
         appBar: GlassAppBar(
@@ -163,6 +167,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
               );
             },
           ),
+        ),
         ),
       ),
     );

@@ -149,7 +149,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
       background: const AppBackground(),
       statusBarStyle: GlassStatusBarStyle.light,
       edgeToEdge: true,
-      child: Scaffold(
+      child: AdaptiveLiquidGlassLayer(
+        clipBehavior: Clip.none,
+        child: Scaffold(
         backgroundColor: Colors.transparent,
         extendBodyBehindAppBar: true,
         appBar: GlassAppBar(
@@ -237,6 +239,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                           GlassTextField(
                             controller: _displayCtrl,
                             placeholder: 'Как тебя называть',
+                            height: 36,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
                           ),
                           const SizedBox(height: 12),
                           GlassButton.custom(
@@ -299,6 +303,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     ),
                   ],
                 ),
+        ),
         ),
       ),
     );

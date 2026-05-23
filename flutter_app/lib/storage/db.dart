@@ -1,3 +1,5 @@
+import 'dart:io' show Directory;
+
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
@@ -26,7 +28,12 @@ class AppDb {
   }
 
   static Future<Database> _doOpen() async {
-    final dir = await getApplicationDocumentsDirectory();
+    Directory dir;
+    try {
+      dir = await getApplicationDocumentsDirectory();
+    } catch (_) {
+      dir = Directory.systemTemp.createTempSync('kirca-');
+    }
     final path = p.join(dir.path, 'kirca.db');
     final db = await openDatabase(
       path,

@@ -62,7 +62,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       background: const AppBackground(),
       statusBarStyle: GlassStatusBarStyle.light,
       edgeToEdge: true,
-      child: Scaffold(
+      child: AdaptiveLiquidGlassLayer(
+        clipBehavior: Clip.none,
+        child: Scaffold(
         backgroundColor: Colors.transparent,
         body: SafeArea(
           child: Center(
@@ -103,13 +105,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       prefixIcon: const Icon(Icons.alternate_email, size: 18),
                       autofocus: true,
                       textInputAction: TextInputAction.next,
+                      height: 36,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
                     GlassPasswordField(
                       controller: _p,
                       placeholder: 'Пароль',
                       textInputAction: TextInputAction.done,
                       onSubmitted: (_) => _submit(),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
                     ),
                     if (_err != null) ...[
                       const SizedBox(height: 12),
@@ -151,6 +156,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               ),
             ),
           ),
+        ),
         ),
       ),
     );
