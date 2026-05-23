@@ -4,8 +4,6 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/semantics.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -79,44 +77,45 @@ String? _formatNode(SemanticsNode node) {
   if (node.isMergedIntoParent) return null;
 
   final SemanticsData data = node.getSemanticsData();
-  final bool isRoute = data.hasFlag(SemanticsFlag.scopesRoute);
+  final ui.SemanticsFlags flags = data.flagsCollection;
   final bool hasContent = data.label.isNotEmpty ||
       data.value.isNotEmpty ||
       data.hint.isNotEmpty ||
       data.tooltip.isNotEmpty;
 
-  if (isRoute && !hasContent) return null;
-  if (data.hasFlag(SemanticsFlag.isHidden)) return null;
+  if (flags.scopesRoute && !hasContent) return null;
+  if (flags.isHidden) return null;
 
   final List<String> roles = [];
-  if (data.hasFlag(SemanticsFlag.isHeader)) roles.add('header');
-  if (data.hasFlag(SemanticsFlag.isButton)) roles.add('button');
-  if (data.hasFlag(SemanticsFlag.isTextField)) roles.add('input');
-  if (data.hasFlag(SemanticsFlag.isLink)) roles.add('link');
-  if (data.hasFlag(SemanticsFlag.isImage)) roles.add('image');
-  if (data.hasFlag(SemanticsFlag.isSlider)) roles.add('slider');
-  if (data.hasFlag(SemanticsFlag.isInMutuallyExclusiveGroup)) roles.add('tab');
-  if (data.hasFlag(SemanticsFlag.hasImplicitScrolling)) roles.add('scrollable');
-  if (node.role != SemanticsRole.none) roles.add(node.role.name);
+  if (flags.isHeader) roles.add('header');
+  if (flags.isButton) roles.add('button');
+  if (flags.isTextField) roles.add('input');
+  if (flags.isLink) roles.add('link');
+  if (flags.isImage) roles.add('image');
+  if (flags.isSlider) roles.add('slider');
+  if (flags.isInMutuallyExclusiveGroup) roles.add('tab');
+  if (flags.hasImplicitScrolling) roles.add('scrollable');
+  if (node.role != ui.SemanticsRole.none) roles.add(node.role.name);
 
   final List<String> states = [];
-  if (data.hasFlag(SemanticsFlag.isSelected)) states.add('selected');
-  if (data.hasFlag(SemanticsFlag.hasCheckedState)) {
-    states.add(data.hasFlag(SemanticsFlag.isChecked) ? 'checked' : 'unchecked');
+  if (flags.isSelected == ui.Tristate.isTrue) states.add('selected');
+  if (flags.isChecked != ui.CheckedState.none) {
+    states.add(flags.isChecked == ui.CheckedState.isTrue
+        ? 'checked'
+        : flags.isChecked == ui.CheckedState.mixed
+            ? 'mixed'
+            : 'unchecked');
   }
-  if (data.hasFlag(SemanticsFlag.hasToggledState)) {
-    states.add(data.hasFlag(SemanticsFlag.isToggled) ? 'on' : 'off');
+  if (flags.isToggled != ui.Tristate.none) {
+    states.add(flags.isToggled == ui.Tristate.isTrue ? 'on' : 'off');
   }
-  if (data.hasFlag(SemanticsFlag.hasEnabledState) &&
-      !data.hasFlag(SemanticsFlag.isEnabled)) {
-    states.add('disabled');
-  }
-  if (data.hasFlag(SemanticsFlag.isFocused)) states.add('focused');
-  if (data.hasFlag(SemanticsFlag.isObscured)) states.add('obscured');
-  if (data.hasFlag(SemanticsFlag.isReadOnly)) states.add('readonly');
-  if (data.hasFlag(SemanticsFlag.isRequired)) states.add('required');
-  if (data.hasFlag(SemanticsFlag.hasExpandedState)) {
-    states.add(data.hasFlag(SemanticsFlag.isExpanded) ? 'expanded' : 'collapsed');
+  if (flags.isEnabled == ui.Tristate.isFalse) states.add('disabled');
+  if (flags.isFocused == ui.Tristate.isTrue) states.add('focused');
+  if (flags.isObscured) states.add('obscured');
+  if (flags.isReadOnly) states.add('readonly');
+  if (flags.isRequired == ui.Tristate.isTrue) states.add('required');
+  if (flags.isExpanded != ui.Tristate.none) {
+    states.add(flags.isExpanded == ui.Tristate.isTrue ? 'expanded' : 'collapsed');
   }
 
   final List<String> actions = [];
@@ -143,8 +142,7 @@ String? _formatNode(SemanticsNode node) {
   if (states.isNotEmpty) sb.write(' [${states.join(',')}]');
   if (actions.isNotEmpty) sb.write(' {${actions.join(',')}}');
 
-  if (data.hasFlag(SemanticsFlag.hasImplicitScrolling) &&
-      data.scrollPosition != null) {
+  if (flags.hasImplicitScrolling && data.scrollPosition != null) {
     final pos = data.scrollPosition!.toStringAsFixed(0);
     final max = (data.scrollExtentMax ?? 0).toStringAsFixed(0);
     sb.write(' scroll=$pos/$max');
