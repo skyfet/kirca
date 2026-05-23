@@ -239,6 +239,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                           GlassTextField(
                             controller: _displayCtrl,
                             placeholder: 'Как тебя называть',
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                           ),
                           const SizedBox(height: 12),
                           GlassButton.custom(

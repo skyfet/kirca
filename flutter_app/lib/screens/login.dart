@@ -105,6 +105,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       prefixIcon: const Icon(Icons.alternate_email, size: 18),
                       autofocus: true,
                       textInputAction: TextInputAction.next,
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                     ),
                     const SizedBox(height: 12),
                     GlassPasswordField(
@@ -112,6 +113,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       placeholder: 'Пароль',
                       textInputAction: TextInputAction.done,
                       onSubmitted: (_) => _submit(),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                     ),
                     if (_err != null) ...[
                       const SizedBox(height: 12),

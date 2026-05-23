@@ -54,6 +54,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
                   placeholder: 'username',
                   prefixIcon: const Icon(Icons.alternate_email, size: 18),
                   autofocus: true,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                 ),
                 const SizedBox(height: 16),
                 Row(

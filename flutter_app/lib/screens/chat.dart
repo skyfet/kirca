@@ -454,7 +454,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final ok = await GlassDialog.show<bool>(
       context: context,
       title: 'Редактировать',
-      content: GlassTextField(controller: ctrl, autofocus: true, maxLines: 4),
+      content: GlassTextField(
+        controller: ctrl,
+        autofocus: true,
+        maxLines: 4,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      ),
       actions: [
         GlassDialogAction(label: 'Отмена', onPressed: () => Navigator.pop(context, false)),
         GlassDialogAction(label: 'Сохранить', isPrimary: true, onPressed: () => Navigator.pop(context, true)),
@@ -687,6 +692,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                           textInputAction: TextInputAction.send,
                           onChanged: _onTextChanged,
                           onSubmitted: (_) => _send(),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                         ),
                       ),
                       const SizedBox(width: 6),

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -12,7 +13,10 @@ import 'package:kirca/main.dart' as app;
 late final Directory _outDir;
 
 Future<void> _shot(WidgetTester tester, String name) async {
-  await tester.pump(const Duration(milliseconds: 300));
+  // Drain paint debt before snapshotting.
+  for (var i = 0; i < 3; i++) {
+    await tester.pump(const Duration(milliseconds: 16));
+  }
   RenderRepaintBoundary? rb;
   void visit(RenderObject node) {
     if (rb != null) return;
@@ -30,11 +34,16 @@ Future<void> _shot(WidgetTester tester, String name) async {
     print('no RenderRepaintBoundary for $name');
     return;
   }
-  final image = await rb!.toImage(pixelRatio: 2);
-  final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+  // Escape test framework's frame control so toImage can run a real paint.
+  final bytes = await tester.runAsync<Uint8List?>(() async {
+    final image = await rb!.toImage(pixelRatio: 2);
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+    return byteData?.buffer.asUint8List();
+  });
   if (bytes == null) return;
   final f = File('${_outDir.path}/$name.png');
-  await f.writeAsBytes(bytes.buffer.asUint8List());
+  await f.writeAsBytes(bytes);
   // ignore: avoid_print
   print('saved ${f.path}');
 }
