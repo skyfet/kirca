@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'api.dart';
+import 'crypto/key_store.dart';
+import 'crypto/room_keys.dart';
 import 'push.dart';
 import 'storage/cache.dart';
 
@@ -91,6 +93,9 @@ class AuthNotifier extends StateNotifier<Auth?> {
   Future<void> _wipeLocal() async {
     try { await _storage.deleteAll(); } catch (_) { /* best-effort */ }
     try { await wipeAllCaches(); } catch (_) {}
+    // Clear E2E key material so the next account on this device starts clean.
+    try { await KeyStore.wipeIdentity(); } catch (_) {}
+    RoomKeyCache.clear();
   }
 }
 

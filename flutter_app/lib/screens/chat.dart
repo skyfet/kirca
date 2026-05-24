@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,6 +13,8 @@ import 'package:web_socket_channel/status.dart' as ws_status;
 
 import '../api.dart';
 import '../config.dart';
+import '../crypto/e2e.dart';
+import '../crypto/room_keys.dart';
 import '../state.dart';
 import '../storage/cache.dart';
 import '../storage/outbox.dart';
@@ -51,12 +54,16 @@ class ChatScreen extends ConsumerStatefulWidget {
   final String roomName;
   final bool isPublic;
   final bool muted;
+  final bool e2e;
+  final int keyVersion;
   const ChatScreen({
     super.key,
     required this.roomId,
     required this.roomName,
     this.isPublic = true,
     this.muted = false,
+    this.e2e = false,
+    this.keyVersion = 0,
   });
 
   @override
@@ -131,8 +138,43 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       if (saved.isNotEmpty && mounted) setState(() {});
     } catch (_) {}
 
-    // 2. Стартовать WS. История подтянется через `messagesProvider`.
+    // 2. For E2E rooms: warm the room-key cache before we start receiving
+    // messages so they're decryptable on arrival.
+    if (widget.e2e) {
+      final auth = ref.read(authProvider);
+      if (auth != null) {
+        try {
+          await RoomKeyCache.latest(Api(token: auth.token), widget.roomId);
+        } catch (_) { /* offline → we'll retry on first decrypt */ }
+      }
+    }
+
+    // 3. Стартовать WS. История подтянется через `messagesProvider`.
     _connect();
+  }
+
+  Future<void> _decryptIfNeeded(CachedMessage m) async {
+    if (!widget.e2e || !m.isE2e || m.text.isNotEmpty || m.deletedAt != null) {
+      return;
+    }
+    final auth = ref.read(authProvider);
+    if (auth == null) return;
+    final v = m.keyVersion ?? widget.keyVersion;
+    final key = await RoomKeyCache.get(Api(token: auth.token), widget.roomId, v);
+    if (key == null) return;
+    try {
+      final plaintext = await E2E.decryptMessage(
+        roomKey: key,
+        cipher: MessageCipher(
+          iv: Uint8List.fromList(base64Decode(m.iv!)),
+          ciphertext: Uint8List.fromList(base64Decode(m.ciphertext!)),
+        ),
+      );
+      await MessagesCache.setDecryptedText(widget.roomId, m.id, plaintext);
+    } catch (_) {
+      // Wrong key version, corrupted blob, or we don't have a key yet — leave
+      // text empty so the UI renders a "🔒 cannot decrypt" placeholder.
+    }
   }
 
   void _onScroll() {
@@ -264,7 +306,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _pending.remove(clientId);
       Outbox.remove(clientId);
     }
-    MessagesCache.upsert(widget.roomId, m);
+    // For E2E rooms we want to flip the message to its decrypted form before
+    // the cache notify fires, so the UI never shows the empty bubble.
+    Future<void>.microtask(() async {
+      await MessagesCache.upsert(widget.roomId, m);
+      if (widget.e2e && m['ciphertext'] != null) {
+        final shaped = CachedMessage.fromRow({
+          'id': m['id'],
+          'room_id': widget.roomId,
+          'client_id': m['client_id'],
+          'user_id': m['user_id'] ?? '',
+          'username': m['username'] ?? '',
+          'text': '',
+          'created_at': createdAt,
+          'ciphertext': m['ciphertext'],
+          'iv': m['iv'],
+          'key_version': m['key_version'],
+        });
+        await _decryptIfNeeded(shaped);
+      }
+    });
     _lastSeenAt = max(_lastSeenAt, createdAt);
     if (mounted) setState(() {});
     _maybeMarkRead();
@@ -377,7 +438,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       text: text,
       createdAt: createdAt,
     );
-    _wsSend(clientId, text, attachmentId);
+    if (widget.e2e) {
+      // Encrypt text asynchronously, then transmit. Pending bubble already
+      // shows the plaintext locally.
+      unawaited(_wsSendEncrypted(clientId, text, attachmentId));
+    } else {
+      _wsSend(clientId, text, attachmentId);
+    }
   }
 
   void _wsSend(String clientId, String text, String? attachmentId) {
@@ -393,9 +460,60 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     } catch (_) {}
   }
 
+  Future<void> _wsSendEncrypted(
+    String clientId,
+    String text,
+    String? attachmentId,
+  ) async {
+    final auth = ref.read(authProvider);
+    if (auth == null) return;
+    final api = Api(token: auth.token);
+    final key = await RoomKeyCache.latest(api, widget.roomId);
+    if (key == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Не удалось получить ключ комнаты — отправка отложена'),
+        ));
+      }
+      return;
+    }
+    final v = RoomKeyCache.latestVersion(widget.roomId) ?? widget.keyVersion;
+    final ws = _ws;
+    if (ws == null) return;
+    try {
+      if (text.isNotEmpty) {
+        final cipher = await E2E.encryptMessage(roomKey: key, plaintext: text);
+        ws.sink.add(jsonEncode({
+          'type': 'msg',
+          'client_id': clientId,
+          'ciphertext': cipher.ctB64,
+          'iv': cipher.ivB64,
+          'key_version': v,
+          if (attachmentId != null) 'attachment_id': attachmentId,
+        }));
+      } else if (attachmentId != null) {
+        // Attachment-only E2E message still needs ciphertext on the wire — we
+        // wrap a zero-length payload so the DO accepts the row.
+        final cipher = await E2E.encryptMessage(roomKey: key, plaintext: '');
+        ws.sink.add(jsonEncode({
+          'type': 'msg',
+          'client_id': clientId,
+          'ciphertext': cipher.ctB64,
+          'iv': cipher.ivB64,
+          'key_version': v,
+          'attachment_id': attachmentId,
+        }));
+      }
+    } catch (_) {}
+  }
+
   void _resendPending() {
     for (final p in _pending.values) {
-      _wsSend(p.clientId, p.text, p.attachment?.id);
+      if (widget.e2e) {
+        unawaited(_wsSendEncrypted(p.clientId, p.text, p.attachment?.id));
+      } else {
+        _wsSend(p.clientId, p.text, p.attachment?.id);
+      }
     }
   }
 
@@ -417,17 +535,60 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       return;
     }
     try {
-      final reserved =
-          await Api(token: auth.token).reserveUpload(mime: mime, size: bytes.length);
-      final uploadUrl = reserved['upload_url']?.toString();
-      final attachmentId = reserved['id']?.toString();
-      final publicUrl = reserved['public_url']?.toString();
-      if (uploadUrl == null || attachmentId == null) return;
-      await Api(token: auth.token).uploadBytes(uploadUrl, bytes, mime);
-      _sendCore(
-        attachmentId: attachmentId,
-        attPreview: CachedAttachment(id: attachmentId, url: publicUrl, mime: mime),
-      );
+      final api = Api(token: auth.token);
+      if (widget.e2e) {
+        final roomKey = await RoomKeyCache.latest(api, widget.roomId);
+        if (roomKey == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Нет ключа комнаты — загрузка невозможна'),
+            ));
+          }
+          return;
+        }
+        final cipher = await E2E.encryptAttachment(
+          roomKey: roomKey,
+          bytes: Uint8List.fromList(bytes),
+        );
+        final v = RoomKeyCache.latestVersion(widget.roomId) ?? widget.keyVersion;
+        final reserved = await api.reserveUpload(
+          mime: 'application/octet-stream',
+          size: cipher.ciphertext.length,
+          e2e: true,
+          roomId: widget.roomId,
+          iv: base64Encode(cipher.iv),
+          wrappedKey: base64Encode(cipher.wrappedKey),
+          wrappedKeyIv: base64Encode(cipher.wrappedKeyIv),
+          keyVersion: v,
+        );
+        final uploadUrl = reserved['upload_url']?.toString();
+        final attachmentId = reserved['id']?.toString();
+        if (uploadUrl == null || attachmentId == null) return;
+        await api.uploadBytes(uploadUrl, cipher.ciphertext, 'application/octet-stream');
+        _sendCore(
+          attachmentId: attachmentId,
+          attPreview: CachedAttachment(
+            id: attachmentId,
+            url: reserved['public_url']?.toString(),
+            mime: mime,
+            wrappedKey: base64Encode(cipher.wrappedKey),
+            wrappedKeyIv: base64Encode(cipher.wrappedKeyIv),
+            iv: base64Encode(cipher.iv),
+            keyVersion: v,
+          ),
+        );
+      } else {
+        final reserved = await api.reserveUpload(mime: mime, size: bytes.length);
+        final uploadUrl = reserved['upload_url']?.toString();
+        final attachmentId = reserved['id']?.toString();
+        final publicUrl = reserved['public_url']?.toString();
+        if (uploadUrl == null || attachmentId == null) return;
+        await api.uploadBytes(uploadUrl, bytes, mime);
+        _sendCore(
+          attachmentId: attachmentId,
+          attPreview: CachedAttachment(id: attachmentId, url: publicUrl, mime: mime),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
@@ -467,8 +628,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final text = ctrl.text.trim();
     if (text.isEmpty || text == m.text) return;
     try {
-      await Api(token: auth.token).editMessage(widget.roomId, m.id, text);
-      await MessagesCache.applyEdit(widget.roomId, m.id, text, DateTime.now().millisecondsSinceEpoch);
+      final api = Api(token: auth.token);
+      if (widget.e2e) {
+        final key = await RoomKeyCache.latest(api, widget.roomId);
+        if (key == null) throw Exception('нет ключа комнаты');
+        final cipher = await E2E.encryptMessage(roomKey: key, plaintext: text);
+        final v = RoomKeyCache.latestVersion(widget.roomId) ?? widget.keyVersion;
+        await api.editMessage(
+          widget.roomId,
+          m.id,
+          '',
+          ciphertext: cipher.ctB64,
+          iv: cipher.ivB64,
+          keyVersion: v,
+        );
+        // Keep local plaintext fresh so the bubble updates immediately.
+        await MessagesCache.applyEdit(
+          widget.roomId,
+          m.id,
+          text,
+          DateTime.now().millisecondsSinceEpoch,
+        );
+      } else {
+        await api.editMessage(widget.roomId, m.id, text);
+        await MessagesCache.applyEdit(
+          widget.roomId,
+          m.id,
+          text,
+          DateTime.now().millisecondsSinceEpoch,
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
@@ -555,6 +744,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           _lastTailId = list.last.id;
           _scrollToEnd();
           _maybeMarkRead();
+        }
+        // Decrypt any new ciphertext-only rows surfaced by REST history.
+        if (widget.e2e) {
+          for (final m in list) {
+            if (m.isE2e && m.text.isEmpty && m.deletedAt == null) {
+              unawaited(_decryptIfNeeded(m));
+            }
+          }
         }
       },
     );
@@ -755,17 +952,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 ),
               ),
             ),
-          if (r.attachmentUrl != null)
+          if (r.attachment != null)
             Padding(
               padding: const EdgeInsets.only(top: 2, bottom: 4),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(10),
-                child: Image.network(
-                  r.attachmentUrl!,
-                  width: 220,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) =>
-                      const Icon(Icons.broken_image, color: AppColors.onGlassDim),
+                child: _AttachmentImage(
+                  attachment: r.attachment!,
+                  e2e: widget.e2e,
+                  roomId: widget.roomId,
+                  token: ref.read(authProvider)?.token ?? '',
                 ),
               ),
             ),
@@ -862,6 +1058,7 @@ class _Row {
   final bool edited;
   final bool deleted;
   final String? attachmentUrl;
+  final CachedAttachment? attachment;
   final CachedMessage? serverMsg;
 
   _Row._({
@@ -873,6 +1070,7 @@ class _Row {
     required this.edited,
     required this.deleted,
     required this.attachmentUrl,
+    required this.attachment,
     required this.serverMsg,
   });
 
@@ -885,6 +1083,7 @@ class _Row {
         edited: m.editedAt != null,
         deleted: m.deletedAt != null,
         attachmentUrl: m.attachment?.url,
+        attachment: m.attachment,
         serverMsg: m,
       );
 
@@ -897,6 +1096,108 @@ class _Row {
         edited: false,
         deleted: false,
         attachmentUrl: p.attachment?.url,
+        attachment: p.attachment,
         serverMsg: null,
       );
+}
+
+/// Renders an image inside a chat bubble. For plain rooms it's a thin wrapper
+/// over [Image.network]; for E2E rooms it downloads the ciphertext, decrypts
+/// it with the room key, and renders the resulting bytes from memory.
+class _AttachmentImage extends StatefulWidget {
+  final CachedAttachment attachment;
+  final bool e2e;
+  final String roomId;
+  final String token;
+  const _AttachmentImage({
+    required this.attachment,
+    required this.e2e,
+    required this.roomId,
+    required this.token,
+  });
+
+  @override
+  State<_AttachmentImage> createState() => _AttachmentImageState();
+}
+
+class _AttachmentImageState extends State<_AttachmentImage> {
+  Uint8List? _bytes;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.e2e && widget.attachment.isE2e) {
+      _loadAndDecrypt();
+    }
+  }
+
+  Future<void> _loadAndDecrypt() async {
+    final att = widget.attachment;
+    if (att.id == null) {
+      setState(() => _failed = true);
+      return;
+    }
+    try {
+      final api = Api(token: widget.token);
+      final cipherBytes = await api.downloadAttachment(att.id!);
+      final key = await RoomKeyCache.get(
+        api,
+        widget.roomId,
+        att.keyVersion ?? 0,
+      );
+      if (key == null) {
+        if (mounted) setState(() => _failed = true);
+        return;
+      }
+      final plain = await E2E.decryptAttachment(
+        roomKey: key,
+        cipher: AttachmentCipher(
+          ciphertext: Uint8List.fromList(cipherBytes),
+          iv: Uint8List.fromList(base64Decode(att.iv!)),
+          wrappedKey: Uint8List.fromList(base64Decode(att.wrappedKey!)),
+          wrappedKeyIv: Uint8List.fromList(base64Decode(att.wrappedKeyIv!)),
+        ),
+      );
+      if (mounted) setState(() => _bytes = plain);
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final placeholder = Container(
+      width: 220,
+      height: 160,
+      alignment: Alignment.center,
+      color: const Color(0x22000000),
+      child: const SizedBox(
+        width: 22,
+        height: 22,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      ),
+    );
+    final brokenIcon = const SizedBox(
+      width: 220,
+      height: 160,
+      child: Center(
+        child: Icon(Icons.broken_image, color: AppColors.onGlassDim),
+      ),
+    );
+
+    if (widget.e2e && widget.attachment.isE2e) {
+      if (_failed) return brokenIcon;
+      if (_bytes == null) return placeholder;
+      return Image.memory(_bytes!, width: 220, fit: BoxFit.cover);
+    }
+    final url = widget.attachment.url;
+    if (url == null) return brokenIcon;
+    return Image.network(
+      url,
+      width: 220,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => brokenIcon,
+    );
+  }
 }

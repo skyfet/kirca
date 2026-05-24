@@ -37,13 +37,15 @@ class AppDb {
     final path = p.join(dir.path, 'kirca.db');
     final db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, _) async {
         await _createV1(db);
         await _createV2(db);
+        await _migrateV3(db);
       },
       onUpgrade: (db, oldV, newV) async {
         if (oldV < 2) await _createV2(db);
+        if (oldV < 3) await _migrateV3(db);
       },
     );
     _db = db;
@@ -124,5 +126,20 @@ class AppDb {
         created_at           INTEGER NOT NULL
       )
     ''');
+  }
+
+  // v3: E2E columns on rooms + ciphertext columns on messages + wrapping
+  // columns on attachments. Stored locally so the chat screen can branch on
+  // room.e2e without an extra round-trip.
+  static Future<void> _migrateV3(Database db) async {
+    await db.execute("ALTER TABLE rooms ADD COLUMN e2e INTEGER NOT NULL DEFAULT 0");
+    await db.execute("ALTER TABLE rooms ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0");
+    await db.execute("ALTER TABLE messages ADD COLUMN ciphertext TEXT");
+    await db.execute("ALTER TABLE messages ADD COLUMN iv TEXT");
+    await db.execute("ALTER TABLE messages ADD COLUMN key_version INTEGER");
+    await db.execute("ALTER TABLE messages ADD COLUMN attachment_wrapped_key TEXT");
+    await db.execute("ALTER TABLE messages ADD COLUMN attachment_wrapped_key_iv TEXT");
+    await db.execute("ALTER TABLE messages ADD COLUMN attachment_iv TEXT");
+    await db.execute("ALTER TABLE messages ADD COLUMN attachment_key_version INTEGER");
   }
 }

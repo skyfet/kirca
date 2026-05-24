@@ -51,6 +51,13 @@ wsRoutes.openapi(wsRoute, async (c) => {
     return rejectWebSocket(1008, "forbidden");
   }
 
+  // Pass the room's e2e flag to the DO so it knows which message shape to
+  // accept on this socket.
+  const roomRow = await c.env.DB
+    .prepare("SELECT e2e FROM rooms WHERE id = ?")
+    .bind(roomId)
+    .first<{ e2e: number }>();
+
   const doId = c.env.ROOM.idFromName(roomId);
   const stub = c.env.ROOM.get(doId);
 
@@ -58,6 +65,7 @@ wsRoutes.openapi(wsRoute, async (c) => {
   url.searchParams.set("userId", user.id);
   url.searchParams.set("username", user.username);
   url.searchParams.set("roomId", roomId);
+  if (roomRow?.e2e === 1) url.searchParams.set("e2e", "1");
 
   return stub.fetch(url.toString(), c.req.raw);
 });

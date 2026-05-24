@@ -15,6 +15,7 @@ import { messageRoutes } from "./routes/messages";
 import { profileRoutes } from "./routes/profile";
 import { uploadRoutes } from "./routes/uploads";
 import { wsRoutes } from "./routes/ws";
+import { e2eRoutes } from "./routes/e2e";
 
 export { Room } from "./room";
 export { UserHub } from "./user_hub";
@@ -110,6 +111,7 @@ app.route("/", messageRoutes);
 app.route("/", profileRoutes);
 app.route("/", uploadRoutes);
 app.route("/", wsRoutes);
+app.route("/", e2eRoutes);
 
 // Регистрируем сам /openapi.json как ручку в спеке (чтобы он попал в paths),
 // фактический ответ ниже подключается через `.doc()`.

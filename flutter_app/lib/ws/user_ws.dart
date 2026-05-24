@@ -136,17 +136,20 @@ class UserWs {
     final msg = (m['message'] as Map<String, dynamic>?) ?? const {};
     final senderId = msg['user_id']?.toString() ?? '';
     final preview = (msg['text'] as String?)?.trim() ?? '';
+    final hasCiphertext = (msg['ciphertext'] as String?)?.isNotEmpty == true;
     final createdAt = (msg['created_at'] as num?)?.toInt() ?? DateTime.now().millisecondsSinceEpoch;
 
-    // Пишем в кэш сообщений.
     await MessagesCache.upsert(roomId, msg);
 
-    // Обновляем last + bump unread (только если не своё и не для активной комнаты).
-    await RoomsCache.setLast(
-      roomId,
-      preview.isNotEmpty ? preview : '📎 вложение',
-      createdAt,
-    );
+    // In E2E rooms we can't preview the text (server never saw it). Show a
+    // lock icon as the room-list preview instead — actual plaintext renders
+    // only after the user opens the chat and decrypts.
+    final lastText = hasCiphertext
+        ? '🔒 шифрованное сообщение'
+        : preview.isNotEmpty
+            ? preview
+            : '📎 вложение';
+    await RoomsCache.setLast(roomId, lastText, createdAt);
     final activeRoom = ref.read(currentRoomProvider);
     if (senderId != userId && activeRoom != roomId) {
       await RoomsCache.bumpUnread(roomId);

@@ -1,3 +1,6 @@
+# Local build artifacts for wordlist generation (reproducible via scripts/build_wordlists.py)
+scripts/.cache/
+
 # Secrets / local env
 .dev.vars
 backend/.dev.vars

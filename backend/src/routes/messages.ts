@@ -22,11 +22,15 @@ const HISTORY_SELECT = `
   SELECT
     m.id, m.client_id, m.user_id, m.username, m.text, m.created_at,
     m.edited_at, m.deleted_at,
-    m.attachment_id,
+    m.attachment_id, m.ciphertext, m.iv, m.key_version,
     a.mime AS attachment_mime,
     a.r2_key AS attachment_key,
     a.width AS attachment_width,
-    a.height AS attachment_height
+    a.height AS attachment_height,
+    a.wrapped_key AS attachment_wrapped_key,
+    a.wrapped_key_iv AS attachment_wrapped_key_iv,
+    a.iv AS attachment_iv,
+    a.key_version AS attachment_key_version
   FROM messages m
   LEFT JOIN attachments a ON a.id = m.attachment_id
 `;
@@ -37,16 +41,20 @@ const MessageSchema = z
     client_id: z.string().uuid().describe("Idempotency key from the client."),
     user_id: z.string().uuid(),
     username: z.string(),
-    text: z.string(),
+    text: z.string().describe("Empty in E2E rooms — see ciphertext/iv."),
     created_at: z.number().int().describe("Unix epoch milliseconds."),
     edited_at: z.number().int().nullable().optional(),
     deleted_at: z.number().int().nullable().optional(),
     attachment: z.record(z.unknown()).optional(),
+    ciphertext: z.string().optional().describe("base64 AES-GCM ciphertext, set in E2E rooms."),
+    iv: z.string().optional(),
+    key_version: z.number().int().optional(),
   })
   .openapi("Message");
 
 function shapeMessage(env: Env, row: Record<string, unknown>): Record<string, unknown> {
-  const base = {
+  const isE2e = !!row.ciphertext;
+  const base: Record<string, unknown> = {
     id: row.id,
     client_id: row.client_id,
     user_id: row.user_id,
@@ -56,19 +64,28 @@ function shapeMessage(env: Env, row: Record<string, unknown>): Record<string, un
     edited_at: row.edited_at ?? null,
     deleted_at: row.deleted_at ?? null,
   };
+  if (isE2e && !row.deleted_at) {
+    base.ciphertext = row.ciphertext;
+    base.iv = row.iv;
+    base.key_version = row.key_version;
+  }
   if (row.attachment_id) {
     const key = row.attachment_key as string;
     const base_url = env.R2_PUBLIC_BASE?.replace(/\/+$/, "") ?? null;
-    return {
-      ...base,
-      attachment: {
-        id: row.attachment_id,
-        mime: row.attachment_mime,
-        url: base_url ? `${base_url}/${key}` : null,
-        width: row.attachment_width ?? null,
-        height: row.attachment_height ?? null,
-      },
+    const att: Record<string, unknown> = {
+      id: row.attachment_id,
+      mime: row.attachment_mime,
+      url: base_url ? `${base_url}/${key}` : null,
+      width: row.attachment_width ?? null,
+      height: row.attachment_height ?? null,
     };
+    if (row.attachment_wrapped_key) {
+      att.wrapped_key = row.attachment_wrapped_key;
+      att.wrapped_key_iv = row.attachment_wrapped_key_iv;
+      att.iv = row.attachment_iv;
+      att.key_version = row.attachment_key_version;
+    }
+    base.attachment = att;
   }
   return base;
 }
@@ -172,9 +189,13 @@ const editMessageRoute = createRoute({
         id: z.string(),
         text: z.string(),
         edited_at: z.number().int(),
+        ciphertext: z.string().optional(),
+        iv: z.string().optional(),
+        key_version: z.number().int().optional(),
       }),
       "Updated.",
     ),
+    400: errorResponse("Wrong body shape for the room type."),
     401: unauthorized,
     403: errorResponse("Not the author."),
     404: notFound,
@@ -185,7 +206,7 @@ const editMessageRoute = createRoute({
 messageRoutes.openapi(editMessageRoute, async (c) => {
   const u = getUser(c);
   const { id: roomId, msgId } = c.req.valid("param");
-  const { text } = c.req.valid("json");
+  const body = c.req.valid("json");
 
   const row = await c.env.DB
     .prepare("SELECT user_id, deleted_at FROM messages WHERE id = ? AND room_id = ?")
@@ -195,38 +216,88 @@ messageRoutes.openapi(editMessageRoute, async (c) => {
   if (row.user_id !== u.id) return c.json({ error: "forbidden" }, 403);
   if (row.deleted_at) return c.json({ error: "deleted" }, 409);
 
+  const room = await c.env.DB
+    .prepare("SELECT e2e FROM rooms WHERE id = ?")
+    .bind(roomId)
+    .first<{ e2e: number }>();
+  const isE2e = room?.e2e === 1;
+
   const now = Date.now();
-  await c.env.DB
-    .prepare("UPDATE messages SET text = ?, edited_at = ? WHERE id = ?")
-    .bind(text.slice(0, 4000), now, msgId)
-    .run();
+  let textOut = "";
+  let cipherOut: { ciphertext: string; iv: string; key_version: number } | null = null;
+
+  if (isE2e) {
+    if (!body.ciphertext || !body.iv || body.key_version == null) {
+      return c.json({ error: "e2e edit requires ciphertext, iv, key_version" }, 400);
+    }
+    const ct = body.ciphertext.slice(0, 8192);
+    const iv = body.iv.slice(0, 64);
+    const kv = body.key_version;
+    await c.env.DB
+      .prepare(
+        "UPDATE messages SET text = '', ciphertext = ?, iv = ?, key_version = ?, edited_at = ? WHERE id = ?",
+      )
+      .bind(ct, iv, kv, now, msgId)
+      .run();
+    cipherOut = { ciphertext: ct, iv, key_version: kv };
+  } else {
+    if (!body.text) {
+      return c.json({ error: "plain room edit requires text" }, 400);
+    }
+    textOut = body.text.slice(0, 4000);
+    await c.env.DB
+      .prepare("UPDATE messages SET text = ?, edited_at = ? WHERE id = ?")
+      .bind(textOut, now, msgId)
+      .run();
+  }
+
+  const editBroadcast: Record<string, unknown> = {
+    type: "edit",
+    id: msgId,
+    text: textOut,
+    edited_at: now,
+  };
+  if (cipherOut) {
+    editBroadcast.ciphertext = cipherOut.ciphertext;
+    editBroadcast.iv = cipherOut.iv;
+    editBroadcast.key_version = cipherOut.key_version;
+  }
 
   try {
     const stub = c.env.ROOM.get(c.env.ROOM.idFromName(roomId));
     await stub.fetch("https://room.internal/broadcast", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "edit",
-        id: msgId,
-        text: text.slice(0, 4000),
-        edited_at: now,
-      }),
+      body: JSON.stringify(editBroadcast),
     });
-  } catch { /* DO может быть не поднят */ }
+  } catch { /* */ }
 
-  // Глобальный fan-out — чтобы кэш на других экранах тоже обновился.
-  c.executionCtx.waitUntil(
-    notifyRoomMembers(c.env, roomId, {
-      type: "message_edited",
-      room_id: roomId,
-      id: msgId,
-      text: text.slice(0, 4000),
-      edited_at: now,
-    }),
-  );
+  const fanout: Record<string, unknown> = {
+    type: "message_edited",
+    room_id: roomId,
+    id: msgId,
+    text: textOut,
+    edited_at: now,
+  };
+  if (cipherOut) {
+    fanout.ciphertext = cipherOut.ciphertext;
+    fanout.iv = cipherOut.iv;
+    fanout.key_version = cipherOut.key_version;
+  }
+  c.executionCtx.waitUntil(notifyRoomMembers(c.env, roomId, fanout));
 
-  return c.json({ ok: true, id: msgId, text, edited_at: now }, 200);
+  const response: Record<string, unknown> = {
+    ok: true,
+    id: msgId,
+    text: textOut,
+    edited_at: now,
+  };
+  if (cipherOut) {
+    response.ciphertext = cipherOut.ciphertext;
+    response.iv = cipherOut.iv;
+    response.key_version = cipherOut.key_version;
+  }
+  return c.json(response as never, 200);
 });
 
 const deleteMessageRoute = createRoute({
