@@ -222,6 +222,16 @@ Future<void> _dumpSemantics(WidgetTester tester, String name) async {
 // Icon + tint, Container/DecoratedBox/Material backgrounds + radii.
 // Every line gets the on-screen rect, so layout is reconstructable.
 //
+// Each line is suffixed with a `// id:line` anchor pointing at the nearest
+// ancestor whose widget was created in user code (`createdByLocalProject`
+// per the inspector). The file ends with a `# legend` block mapping ids to
+// project-relative source paths — agents/reviewers can jump straight from a
+// rendered rectangle to its call-site without grep.
+//
+// Anchor resolution uses `WidgetInspectorService.setSelection` +
+// `getSelectedWidget` per Element; the per-dump inspector group is disposed
+// once the walk completes. Adds ~2.5 s per capture.
+//
 // File: `NN-name.styles.txt`, next to the semantics dump.
 // ---------------------------------------------------------------------------
 

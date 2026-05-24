@@ -1,74 +1,26 @@
 # Roadmap & Architecture
 
-Что улучшать после первого работающего деплоя. Отсортировано по приоритету — на что я бы смотрел сам.
+Что улучшать после первого работающего деплоя. Большая часть P0–P2 уже в коде — ниже только то, что осталось, и архитектурные принципы, которые продолжают действовать.
 
-## P0 — критично, до публичного запуска
+## Шипнуто
 
-### 1. Доставка сообщений (at-least-once + dedup)
-Сейчас если WS отвалится между «отправил» и «дошло» — сообщение теряется. Пользователю кажется, что отправилось, в комнате его нет.
+P0 (доставка с `client_id` + `UNIQUE(room_id, client_id)`, реконнект с backoff `1→2→4→8→16→30c` и догон через `?after=`, scrypt-пароли с `s1:<salt>:<hash>` + автоапгрейд старых SHA-256, membership/приватные комнаты), P1 (нативный APNs через Web Crypto, rate limiting per-IP + per-user, пагинация `?before=`, typing-индикаторы) и P2 в части вложений (R2 + `/uploads`) и read-receipts (`markRead`, `last_read_at`). Бэкенд разложен по `routes/auth.ts`, `routes/rooms.ts`, `routes/messages.ts`, `routes/profile.ts`, `routes/ws.ts`, `routes/devices.ts`, `routes/uploads.ts`. Юнит-тесты на vitest-pool-workers — в `backend/test/unit/`. Staging-воркер `kirca-api-staging` поднимается из ветки `dev`.
 
-**Решение:**
-- Клиент генерит `client_message_id` (UUID v4) до отправки, сохраняет в локальную SQLite очередь как `pending`.
-- На WS: шлёт `{type:"msg", client_id, text}`.
-- Сервер пишет в D1 с `UNIQUE(room_id, client_id)` → если дубликат, возвращает существующий ID.
-- Сервер шлёт обратно `{type:"ack", client_id, server_id}`.
-- Клиент по `ack` переводит сообщение в `delivered`, удаляет из очереди.
-- При реконнекте — переотправить всё, что `pending`.
+## Что осталось
 
-В UI: серая галочка = в очереди, синяя = доставлено.
+### JWT вместо сессий в D1
+Сейчас на каждый запрос — `SELECT` из `sessions` для валидации токена. С ростом QPS это лишний раунд-трип. Альтернатива: подписанный JWT с `exp`, ротация через короткий TTL + refresh. Минус — нет «убить сессию мгновенно» (только blacklist в KV/D1, что возвращает тот же select). Делать, если профилирование покажет, что сейчас этот select — горлышко. Пока — не критично.
 
-### 2. Реконнект и фоновый режим
-Сейчас сокет умирает при сворачивании. Решение:
-- Экспоненциальный backoff (1с → 2с → 4с, потолок 30с).
-- При возврате из фона: переподключиться, дозагрузить пропущенные сообщения через `GET /rooms/:id/history?after=<ts>`.
-- На WS первое сообщение от клиента — `{type:"hello", last_seen_id}`, сервер шлёт всё новее.
+### REST-fallback на отправку: `POST /rooms/:id/messages`
+Если WS не поднимается (корпоративный прокси, фон iOS), чат подвисает на отправке. Эндпоинт принимает то же тело, что и `{type:"msg"}` через WS, и идёт через тот же DO. Удобно ещё и для дебага из `curl`. Минимум кода, ощутимая надёжность.
 
-### 3. Пароли по-человечески
-SHA-256 без соли — это плохо. Замени на **scrypt** (есть в `crypto.subtle` нативно) или **argon2** (через `@noble/hashes`). Сессии можно оставить в D1, но добавь `expires_at` и индекс по нему.
+### Observability
+- `Logpush` в R2 (или внешний сервис) для прод-логов глубже встроенных 30 дней.
+- Структурированный `console.error({reqId, route, code})` — Cloudflare сам тегирует request ID.
+- Tail Workers (`wrangler tail`) для лайв-дебага — не настройка, привычка.
 
-### 4. Membership и приватные комнаты
-Добавь `rooms.is_public` и таблицу `memberships(user_id, room_id, role, joined_at)`. Проверяй на `/rooms/:id/history`, `/rooms/:id/ws`, и в DO при подключении.
-
-## P1 — важно для нормального опыта
-
-### 5. Push (APNs)
-Workers напрямую APNs дёрнуть может, но возни много (JWT, ES256 подпись, HTTP/2). Прагматичнее:
-- Поставить **OneSignal** или **Knock** — у обоих есть простой HTTP API.
-- В DO при отправке сообщения: если получатель оффлайн (нет WS-соединения), вызвать сервис.
-- Считать «оффлайн» по отсутствию `ctx.getWebSockets()` от этого user_id в этой комнате.
-
-Запоминай APNs token при первом логине iOS, шли его в `/devices`.
-
-### 6. Rate limiting
-Перед регистрацией/логином — лимит по IP (10 попыток в час). На отправку сообщений — лимит в DO (10 сообщений в 5 сек на user). Для DO это просто счётчик в `ctx.storage` с TTL.
-
-Для HTTP-эндпоинтов — Cloudflare Rate Limiting Rules в Dashboard, без кода.
-
-### 7. Пагинация истории
-Сейчас `LIMIT 50`. Добавь `?before=<timestamp>&limit=50`, бесконечный скролл вверх.
-
-### 8. Typing indicators
-Чисто WS, без D1. Сообщение `{type:"typing", is_typing:bool}`, DO рассылает всем кроме отправителя. На клиенте — debounce 1 сек.
-
-## P2 — расширения
-
-### 9. Вложения (фото)
-- Клиент → `POST /uploads/sign` → получает presigned URL для R2.
-- Загружает прямо в R2 (минует Worker, не жжёт CPU).
-- В сообщении: `{type:"msg", text, attachment_id}`.
-- На отдаче — Worker проксирует через `caches` API для CDN-кеша.
-
-### 10. Уведомления о прочтении
-`read_receipts(user_id, room_id, last_read_message_id)`. Клиент шлёт `{type:"read", message_id}` когда видит. DO рассылает другим.
-
-### 11. E2E шифрование (если правда нужно)
-Это уже серьёзная переделка. Сервер становится «глупым» — хранит только зашифрованные блоки. Ключи у клиентов, обмен через X3DH (Signal Protocol). Делать только если приватность — основное value.
-
-### 12. Observability
-- Workers Logs (новый, до 30 дней встроенно).
-- Tail Workers для прод-дебага.
-- `console.error` с request ID — Cloudflare сам тегирует.
-- Если станет тесно — Logpush в R2 или внешний сервис.
+### E2E-шифрование
+Серьёзная переделка. Сервер становится «глупым» — хранит только зашифрованные блоки. Ключи у клиентов, обмен через X3DH (Signal Protocol), Sender Keys для групповых комнат. Делать, только если приватность — основное value-предложение; ломает edit/server-side search/uploaded thumbnails.
 
 ## Архитектурные принципы
 
@@ -106,43 +58,25 @@ app.route('/v1', v1);
 Если WS не подключился — приложение не должно быть мёртвым. История через REST доступна. Отправка может работать через `POST /rooms/:id/messages` как fallback (добавь такой эндпоинт). Это полезно ещё и для дебага.
 
 ### Слои в Worker
-Сейчас в `index.ts` всё в одном файле. Когда станет 500+ строк — разнеси:
+`index.ts` — только композиция: middleware + `app.route()` на под-роутеры. Бизнес-логика живёт в:
 ```
 src/
   routes/
-    auth.ts
-    rooms.ts
-    messages.ts
-  lib/
-    db.ts        # обёртки над D1, типы
-    auth.ts      # хэширование, токены
-  room.ts        # DO
-  index.ts       # композиция роутов
+    auth.ts        # register/login/logout/change-password
+    rooms.ts       # CRUD комнат, join
+    messages.ts    # история, edit/delete, read-receipts
+    profile.ts     # /me, avatar, delete-account
+    ws.ts          # WS upgrade → DO
+    devices.ts     # APNs token registration
+    uploads.ts     # R2 presigned upload
+  room.ts          # Durable Object
+  lib/auth.ts      # scrypt, token verify
 ```
+Когда роут вырастает за пару сотен строк — выноси в отдельный файл рядом с остальными.
 
 ### Тесты
-`vitest` + `@cloudflare/vitest-pool-workers` — позволяет гонять Worker в нативной среде, с реальной D1 (in-memory). Заведи хотя бы:
-- Регистрация → логин → JWT валиден.
-- Создать комнату → история пустая.
-- Два клиента в одной комнате → сообщение от A приходит B.
-
-Это окупится с первого же рефакторинга.
+`vitest` + `@cloudflare/vitest-pool-workers` гоняет Worker в нативной среде с реальной D1 (in-memory). Покрытие в `backend/test/unit/`: auth-flow, dedup сообщений, `user_hub` (DO-presence), общие HTTP-эндпоинты. E2E поверх — Newman против локального wrangler в `test/kirca-api.postman_collection.json`. Любая новая фича шипится с минимальным тестом — это окупается с первого же рефакторинга.
 
 ### Конфиг и env per stage
-Сейчас один воркер. Сделай два:
-- `chat-backend-staging` (preview deployment)
-- `chat-backend-prod`
+Два воркера: `kirca-api` (prod) и `kirca-api-staging`. Конфигурируются через `[env.staging]` / `[env.production]` в `wrangler.toml`. CI деплоит staging на push в `dev`, prod — на push в `main` (см. `.github/workflows/backend-*.yml`).
 
-В `wrangler.toml` через `[env.staging]` и `[env.production]`. CI деплоит в staging на push в `dev` бранч, в prod — на push в `main`.
-
-## Что я бы делал первым
-
-Если у тебя ограниченное время, приоритет такой:
-
-1. Получить рабочий деплой (то, что сделано).
-2. Доставка с ack + дедуп (P0.1) — это **кардинально** меняет ощущение продукта.
-3. Реконнект (P0.2).
-4. Пароли (P0.3) — минимум перед тем, как давать кому-то учётку.
-5. Membership (P0.4) — если планируется не только публичный чат.
-
-Дальше уже по обстоятельствам и фидбеку первых пользователей.
