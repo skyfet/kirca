@@ -136,9 +136,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   void _onScroll() {
-    if (_scroll.position.pixels <= 80 &&
-        !_loadingOlder &&
-        _hasMoreOlder) {
+    if (!_scroll.position.hasContentDimensions) return;
+    final distanceFromOldest =
+        _scroll.position.maxScrollExtent - _scroll.position.pixels;
+    if (distanceFromOldest <= 80 && !_loadingOlder && _hasMoreOlder) {
       _loadOlder();
     }
   }
@@ -161,15 +162,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         _hasMoreOlder = false;
         return;
       }
-      final beforeMax = _scroll.position.maxScrollExtent;
-      final beforePixels = _scroll.position.pixels;
       await MessagesCache.upsertAll(widget.roomId, h.cast<Map<String, dynamic>>());
       if (h.length < 50) _hasMoreOlder = false;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!_scroll.hasClients) return;
-        final newMax = _scroll.position.maxScrollExtent;
-        _scroll.jumpTo(beforePixels + (newMax - beforeMax));
-      });
+      // reverse: true ListView — newer items pinned to offset 0 (bottom).
+      // Adding older items extends maxScrollExtent upward; the user's
+      // current pixels value still references the same visible content,
+      // so no jumpTo correction is needed.
     } catch (_) {
       // тихо — в следующий раз
     } finally {
@@ -325,12 +323,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   void _scrollToEnd({bool animate = true}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scroll.hasClients) return;
-      final target = _scroll.position.maxScrollExtent;
+      // reverse: true — offset 0 is the newest message at the bottom.
       if (animate) {
-        _scroll.animateTo(target,
+        _scroll.animateTo(0,
             duration: const Duration(milliseconds: 180), curve: Curves.easeOut);
       } else {
-        _scroll.jumpTo(target);
+        _scroll.jumpTo(0);
       }
     });
   }
@@ -650,9 +648,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             Expanded(
               child: ListView.builder(
                 controller: _scroll,
-                padding: const EdgeInsets.fromLTRB(12, 16, 12, 8),
+                reverse: true,
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
                 itemCount: allItems.length,
-                itemBuilder: (_, i) => _bubble(allItems[i], me),
+                itemBuilder: (_, i) =>
+                    _bubble(allItems[allItems.length - 1 - i], me),
               ),
             ),
             if (_peerTyping.isNotEmpty)

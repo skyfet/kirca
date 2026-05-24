@@ -114,7 +114,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       placeholder: 'Пароль',
                       textInputAction: TextInputAction.done,
                       onSubmitted: (_) => _submit(),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     ),
                     if (_err != null) ...[
                       const SizedBox(height: 12),

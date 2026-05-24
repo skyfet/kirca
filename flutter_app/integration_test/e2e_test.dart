@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -369,28 +370,134 @@ String? _formatStyleLine(Element el) {
 bool _isStyleLeaf(Widget w) =>
     w is Text || w is RichText || w is Icon || w is ColoredBox;
 
-void _walkForStyle(StringBuffer buf, Element el, int depth) {
+/// Per-dump anchor table: relative source path → legend id (1-based, stable
+/// insertion order). Built incrementally during a walk so identifiers stay
+/// dense and match the footer.
+class _AnchorBook {
+  final Map<String, int> _ids = <String, int>{};
+  final String _group;
+
+  _AnchorBook(this._group);
+
+  /// Returns "id:line" for the nearest ancestor element whose widget was
+  /// created in user (local-project) code. Walks up the ancestor chain so a
+  /// `DecoratedBox` constructed inside `GlassTextField.build()` annotates the
+  /// call-site of `GlassTextField(...)` in `lib/screens/...`, not the internals
+  /// of the pub-cache package.
+  String? annotate(Element el) {
+    final ({String file, int line})? loc = _findLocalCreationLocation(el, _group);
+    if (loc == null) return null;
+    final String rel = _relativizePath(loc.file);
+    final int id = _ids.putIfAbsent(rel, () => _ids.length + 1);
+    return '$id:${loc.line}';
+  }
+
+  String renderLegend() {
+    if (_ids.isEmpty) return '';
+    final sb = StringBuffer()..writeln('# legend');
+    _ids.forEach((path, id) => sb.writeln('$id: $path'));
+    return sb.toString();
+  }
+}
+
+/// Walks up the Element ancestor chain via the widget inspector service,
+/// returning the first creation location flagged `createdByLocalProject`.
+/// Caches per-Element lookups inside the inspector group; the dumper disposes
+/// the group at end of dump.
+({String file, int line})? _findLocalCreationLocation(Element start, String group) {
+  final svc = WidgetInspectorService.instance;
+  Element? cursor = start;
+  while (cursor != null) {
+    final ({String file, int line, bool local})? info = _readCreationJson(svc, cursor, group);
+    if (info != null && info.local) {
+      return (file: info.file, line: info.line);
+    }
+    Element? parent;
+    cursor.visitAncestorElements((e) {
+      parent = e;
+      return false;
+    });
+    cursor = parent;
+  }
+  return null;
+}
+
+({String file, int line, bool local})? _readCreationJson(
+    WidgetInspectorService svc, Element el, String group) {
+  try {
+    // ignore: invalid_use_of_protected_member
+    svc.setSelection(el, group);
+    // ignore: invalid_use_of_protected_member
+    final raw = svc.getSelectedWidget(null, group);
+    if (raw.isEmpty || raw == 'null') return null;
+    final m = jsonDecode(raw) as Map<String, dynamic>;
+    final cl = m['creationLocation'] as Map<String, dynamic>?;
+    if (cl == null) return null;
+    final String? file = cl['file'] as String?;
+    final int? line = cl['line'] as int?;
+    if (file == null || line == null) return null;
+    return (
+      file: file,
+      line: line,
+      local: m['createdByLocalProject'] == true,
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Strip the absolute path down to a project-relative form. Falls back to
+/// the raw path when no recognised marker is found.
+String _relativizePath(String absolute) {
+  for (final String marker in const ['/flutter_app/', '/lib/', '/integration_test/']) {
+    final int idx = absolute.lastIndexOf(marker);
+    if (idx >= 0) {
+      final String tail = absolute.substring(idx + 1);
+      // Keep "lib/..." / "integration_test/..." but trim leading "flutter_app/".
+      return tail.startsWith('flutter_app/')
+          ? tail.substring('flutter_app/'.length)
+          : tail;
+    }
+  }
+  return absolute;
+}
+
+void _walkForStyle(StringBuffer buf, Element el, int depth, _AnchorBook book) {
   final String? line = _formatStyleLine(el);
   final int childDepth = line == null ? depth : depth + 1;
   if (line != null) {
+    final String? anchor = book.annotate(el);
     buf.write('  ' * depth);
-    buf.writeln(line);
+    buf.write(line);
+    if (anchor != null) buf.write('  // $anchor');
+    buf.writeln();
   }
   // Skip children of leaf widgets — Text and Icon both wrap a RichText that
   // would otherwise emit a near-duplicate line.
   if (_isStyleLeaf(el.widget)) return;
-  el.visitChildren((child) => _walkForStyle(buf, child, childDepth));
+  el.visitChildren((child) => _walkForStyle(buf, child, childDepth, book));
 }
 
 Future<void> _dumpStyles(WidgetTester tester, String name) async {
   await tester.pump();
 
+  final String group = 'styles-dump-$name';
   final sb = StringBuffer()..writeln('# $name (styles)');
+  final _AnchorBook book = _AnchorBook(group);
   final Element? root = tester.binding.rootElement;
   if (root == null) {
     sb.writeln('(no root element)');
   } else {
-    _walkForStyle(sb, root, 0);
+    _walkForStyle(sb, root, 0, book);
+  }
+  // Release inspector references held under our group name so consecutive
+  // dumps don't accumulate dead Element references.
+  // ignore: invalid_use_of_protected_member
+  WidgetInspectorService.instance.disposeGroup(group);
+  final String legend = book.renderLegend();
+  if (legend.isNotEmpty) {
+    sb.writeln();
+    sb.write(legend);
   }
 
   final f = File('${_outDir.path}/$name.styles.txt');
