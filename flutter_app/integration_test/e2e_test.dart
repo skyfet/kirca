@@ -1,9 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -366,25 +367,137 @@ String? _formatStyleLine(Element el) {
   return null;
 }
 
-void _walkForStyle(StringBuffer buf, Element el, int depth) {
+bool _isStyleLeaf(Widget w) =>
+    w is Text || w is RichText || w is Icon || w is ColoredBox;
+
+/// Per-dump anchor table: relative source path → legend id (1-based, stable
+/// insertion order). Built incrementally during a walk so identifiers stay
+/// dense and match the footer.
+class _AnchorBook {
+  final Map<String, int> _ids = <String, int>{};
+  final String _group;
+
+  _AnchorBook(this._group);
+
+  /// Returns "id:line" for the nearest ancestor element whose widget was
+  /// created in user (local-project) code. Walks up the ancestor chain so a
+  /// `DecoratedBox` constructed inside `GlassTextField.build()` annotates the
+  /// call-site of `GlassTextField(...)` in `lib/screens/...`, not the internals
+  /// of the pub-cache package.
+  String? annotate(Element el) {
+    final ({String file, int line})? loc = _findLocalCreationLocation(el, _group);
+    if (loc == null) return null;
+    final String rel = _relativizePath(loc.file);
+    final int id = _ids.putIfAbsent(rel, () => _ids.length + 1);
+    return '$id:${loc.line}';
+  }
+
+  String renderLegend() {
+    if (_ids.isEmpty) return '';
+    final sb = StringBuffer()..writeln('# legend');
+    _ids.forEach((path, id) => sb.writeln('$id: $path'));
+    return sb.toString();
+  }
+}
+
+/// Walks up the Element ancestor chain via the widget inspector service,
+/// returning the first creation location flagged `createdByLocalProject`.
+/// Caches per-Element lookups inside the inspector group; the dumper disposes
+/// the group at end of dump.
+({String file, int line})? _findLocalCreationLocation(Element start, String group) {
+  final svc = WidgetInspectorService.instance;
+  Element? cursor = start;
+  while (cursor != null) {
+    final ({String file, int line, bool local})? info = _readCreationJson(svc, cursor, group);
+    if (info != null && info.local) {
+      return (file: info.file, line: info.line);
+    }
+    Element? parent;
+    cursor.visitAncestorElements((e) {
+      parent = e;
+      return false;
+    });
+    cursor = parent;
+  }
+  return null;
+}
+
+({String file, int line, bool local})? _readCreationJson(
+    WidgetInspectorService svc, Element el, String group) {
+  try {
+    // ignore: invalid_use_of_protected_member
+    svc.setSelection(el, group);
+    // ignore: invalid_use_of_protected_member
+    final raw = svc.getSelectedWidget(null, group);
+    if (raw.isEmpty || raw == 'null') return null;
+    final m = jsonDecode(raw) as Map<String, dynamic>;
+    final cl = m['creationLocation'] as Map<String, dynamic>?;
+    if (cl == null) return null;
+    final String? file = cl['file'] as String?;
+    final int? line = cl['line'] as int?;
+    if (file == null || line == null) return null;
+    return (
+      file: file,
+      line: line,
+      local: m['createdByLocalProject'] == true,
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Strip the absolute path down to a project-relative form. Falls back to
+/// the raw path when no recognised marker is found.
+String _relativizePath(String absolute) {
+  for (final String marker in const ['/flutter_app/', '/lib/', '/integration_test/']) {
+    final int idx = absolute.lastIndexOf(marker);
+    if (idx >= 0) {
+      final String tail = absolute.substring(idx + 1);
+      // Keep "lib/..." / "integration_test/..." but trim leading "flutter_app/".
+      return tail.startsWith('flutter_app/')
+          ? tail.substring('flutter_app/'.length)
+          : tail;
+    }
+  }
+  return absolute;
+}
+
+void _walkForStyle(StringBuffer buf, Element el, int depth, _AnchorBook book) {
   final String? line = _formatStyleLine(el);
   final int childDepth = line == null ? depth : depth + 1;
   if (line != null) {
+    final String? anchor = book.annotate(el);
     buf.write('  ' * depth);
-    buf.writeln(line);
+    buf.write(line);
+    if (anchor != null) buf.write('  // $anchor');
+    buf.writeln();
   }
-  el.visitChildren((child) => _walkForStyle(buf, child, childDepth));
+  // Skip children of leaf widgets — Text and Icon both wrap a RichText that
+  // would otherwise emit a near-duplicate line.
+  if (_isStyleLeaf(el.widget)) return;
+  el.visitChildren((child) => _walkForStyle(buf, child, childDepth, book));
 }
 
 Future<void> _dumpStyles(WidgetTester tester, String name) async {
   await tester.pump();
 
+  final String group = 'styles-dump-$name';
   final sb = StringBuffer()..writeln('# $name (styles)');
+  final _AnchorBook book = _AnchorBook(group);
   final Element? root = tester.binding.rootElement;
   if (root == null) {
     sb.writeln('(no root element)');
   } else {
-    _walkForStyle(sb, root, 0);
+    _walkForStyle(sb, root, 0, book);
+  }
+  // Release inspector references held under our group name so consecutive
+  // dumps don't accumulate dead Element references.
+  // ignore: invalid_use_of_protected_member
+  WidgetInspectorService.instance.disposeGroup(group);
+  final String legend = book.renderLegend();
+  if (legend.isNotEmpty) {
+    sb.writeln();
+    sb.write(legend);
   }
 
   final f = File('${_outDir.path}/$name.styles.txt');
@@ -400,14 +513,17 @@ Future<void> _capture(WidgetTester tester, String name) async {
 }
 
 Future<void> _settle(WidgetTester tester,
-    {Duration timeout = const Duration(seconds: 5)}) async {
-  try {
-    await tester.pumpAndSettle(const Duration(milliseconds: 100), EnginePhase.sendSemanticsUpdate, timeout);
-  } catch (_) {
-    // pump several frames to drain pending animations / streams.
-    for (var i = 0; i < 30; i++) {
-      await tester.pump(const Duration(milliseconds: 100));
-    }
+    {Duration timeout = const Duration(seconds: 3)}) async {
+  // Fixed-frame pump instead of pumpAndSettle: the app's LiquidGlass
+  // PerformanceMonitor schedules a frame callback every tick, so under
+  // LiveTestWidgetsFlutterBinding pumpAndSettle never converges (and unlike
+  // the offline binding it does not reliably throw — the whole test then
+  // hangs at the very first _settle call after app.main()).
+  const Duration frame = Duration(milliseconds: 50);
+  final int frames =
+      (timeout.inMilliseconds / frame.inMilliseconds).ceil().clamp(10, 400);
+  for (var i = 0; i < frames; i++) {
+    await tester.pump(frame);
   }
 }
 
@@ -422,11 +538,23 @@ void main() {
   setUpAll(() async {
     _outDir = Directory('integration_test/screenshots');
     if (!_outDir.existsSync()) _outDir.createSync(recursive: true);
+
+    // flutter_secure_storage on Linux talks to libsecret over D-Bus. In this
+    // sandbox there is no session bus, and `.read()` hangs forever (no error,
+    // no timeout — AuthNotifier._load() never returns, the first frame never
+    // builds, and tester.pump() blocks). Mock the plugin channel to return
+    // null for every call; the app then starts with no saved auth.
+    const MethodChannel storageChannel =
+        MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(storageChannel, (call) async => null);
   });
 
   testWidgets('e2e flow: login → rooms → chat → members → profile',
       (tester) async {
-    app.main();
+    // On Linux app.main() resolves to LiquidGlass `basic` mode (no adaptive
+    // benchmark), so it runs cleanly under LiveTestWidgetsFlutterBinding.
+    await app.main();
     await _settle(tester);
     await _capture(tester, '01-login');
 
