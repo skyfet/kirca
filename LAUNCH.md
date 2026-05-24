@@ -35,7 +35,7 @@
 
 ### 1.2. D1-база `kirca-api`
 
-База **уже создана** (см. `backend/wrangler.toml`, `database_id = b5ddc653-...`). Это аккаунт `gdetemka`. Если ты раскатываешь под своим аккаунтом — пересоздай:
+База **уже создана** (см. `backend/wrangler.toml`, `database_id = 10d22275-...`). Это аккаунт `archen`. Если ты раскатываешь под своим аккаунтом — пересоздай:
 
 ```bash
 cd backend
@@ -68,7 +68,7 @@ curl https://kirca-api.<acc>.workers.dev/healthz
 
 ### 1.4. Прибить URL воркера в клиенте и тестах **(один раз)**
 
-Если URL отличается от `https://kirca-api.gdetemka.workers.dev`, обнови:
+Если URL отличается от `https://kirca-api.archen.workers.dev`, обнови:
 
 - `codemagic.yaml` → `vars.KIRCA_API_BASE`
 - `backend/test/kirca-api.postman_environment.json` → `baseUrl`

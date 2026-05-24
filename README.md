@@ -80,7 +80,7 @@ flutter pub get
 ```
 
 ### Настройка адреса бэкенда
-По умолчанию (в `lib/config.dart`) клиент идёт на прод-воркер `https://kirca-api.gdetemka.workers.dev`. Переопределяется на сборке через `--dart-define`:
+По умолчанию (в `lib/config.dart`) клиент идёт на прод-воркер `https://kirca-api.archen.workers.dev`. Переопределяется на сборке через `--dart-define`:
 ```bash
 # локальный wrangler (iOS-симулятор):
 flutter run --dart-define=KIRCA_API_BASE=http://127.0.0.1:8787
