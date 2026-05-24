@@ -21,6 +21,11 @@ const RoomSchema = z
     is_public: z
       .union([z.number().int(), z.boolean()])
       .describe("1/true if anyone can join via POST /rooms/{id}/join."),
+    e2e: z
+      .union([z.number().int(), z.boolean()])
+      .optional()
+      .describe("1/true if message bodies are stored as opaque ciphertext."),
+    key_version: z.number().int().optional(),
   })
   .openapi("Room");
 
@@ -43,7 +48,7 @@ roomRoutes.openapi(listRoomsRoute, async (c) => {
   const { results } = await c.env.DB
     .prepare(
       `SELECT
-         r.id, r.name, r.is_public, r.created_by,
+         r.id, r.name, r.is_public, r.created_by, r.e2e, r.key_version,
          (m.user_id IS NOT NULL) AS is_member,
          COALESCE(m.muted, 0) AS muted,
          COALESCE(m.role, '') AS role,
@@ -85,15 +90,19 @@ const createRoomRoute = createRoute({
 
 roomRoutes.openapi(createRoomRoute, async (c) => {
   const u = getUser(c);
-  const { name, is_public } = c.req.valid("json");
-  const isPublic = is_public === false ? 0 : 1;
+  const { name, is_public, e2e } = c.req.valid("json");
+  // E2E rooms are private by construction — there's no plaintext history for
+  // a public stranger to bootstrap into, so we silently flip is_public off
+  // when e2e is requested.
+  const wantE2e = e2e === true ? 1 : 0;
+  const isPublic = wantE2e === 1 ? 0 : (is_public === false ? 0 : 1);
   const id = uuid();
   const now = Date.now();
   await c.env.DB
     .prepare(
-      "INSERT INTO rooms (id, name, created_at, is_public, created_by) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO rooms (id, name, created_at, is_public, created_by, e2e, key_version) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(id, name.trim(), now, isPublic, u.id)
+    .bind(id, name.trim(), now, isPublic, u.id, wantE2e, wantE2e === 1 ? 1 : 0)
     .run();
   await c.env.DB
     .prepare(
@@ -101,7 +110,6 @@ roomRoutes.openapi(createRoomRoute, async (c) => {
     )
     .bind(u.id, id, "owner", now)
     .run();
-  // Уведомим другие устройства владельца: новая комната.
   c.executionCtx.waitUntil(
     notifyUser(c.env, u.id, {
       type: "room_added",
@@ -113,10 +121,15 @@ roomRoutes.openapi(createRoomRoute, async (c) => {
         role: "owner",
         muted: false,
         unread: 0,
+        e2e: wantE2e === 1,
+        key_version: wantE2e === 1 ? 1 : 0,
       },
     }),
   );
-  return c.json({ id, name: name.trim(), is_public: isPublic === 1 }, 200);
+  return c.json(
+    { id, name: name.trim(), is_public: isPublic === 1, e2e: wantE2e === 1, key_version: wantE2e === 1 ? 1 : 0 },
+    200,
+  );
 });
 
 const joinRoomRoute = createRoute({
