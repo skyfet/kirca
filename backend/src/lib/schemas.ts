@@ -38,9 +38,17 @@ export const createRoomBody = z.object({
   ),
 });
 
-export const messageEditBody = z.object({
-  text: z.string().min(1).max(4000),
-});
+export const messageEditBody = z
+  .object({
+    text: z.string().min(1).max(4000).optional(),
+    ciphertext: z.string().min(1).max(8192).optional(),
+    iv: z.string().min(1).max(64).optional(),
+    key_version: z.number().int().nonnegative().optional(),
+  })
+  .refine(
+    (v) => (v.text && !v.ciphertext) || (v.ciphertext && v.iv != null && v.key_version != null),
+    "must supply either text (plain rooms) or ciphertext+iv+key_version (e2e rooms)",
+  );
 
 export const profileUpdateBody = z.object({
   display_name: z.string().min(1).max(80).nullable().optional(),

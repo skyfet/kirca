@@ -13,6 +13,9 @@ type Attachment = {
   userId: string;
   username: string;
   roomId: string;
+  // E2E rooms store opaque ciphertext instead of plaintext text. Flag is set
+  // when the WS upgrade is accepted and read back on each message.
+  e2e?: boolean;
 };
 
 type StoredMessage = {
@@ -23,6 +26,9 @@ type StoredMessage = {
   text: string;
   created_at: number;
   attachment_id: string | null;
+  ciphertext: string | null;
+  iv: string | null;
+  key_version: number | null;
 };
 
 const WS_RL_LIMIT = 10;
@@ -61,12 +67,13 @@ export class Room extends DurableObject<Env> {
     const userId = url.searchParams.get("userId") ?? "";
     const username = url.searchParams.get("username") ?? "";
     const roomId = url.searchParams.get("roomId") ?? "";
+    const e2e = url.searchParams.get("e2e") === "1";
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ userId, username, roomId } satisfies Attachment);
+    server.serializeAttachment({ userId, username, roomId, e2e } satisfies Attachment);
 
     // Уведомим остальных, что юзер появился. Это даёт presence без отдельного запроса.
     this.broadcast(
@@ -107,6 +114,9 @@ export class Room extends DurableObject<Env> {
       client_id?: string;
       attachment_id?: string;
       is_typing?: boolean;
+      ciphertext?: string;
+      iv?: string;
+      key_version?: number;
     };
     try {
       msg = JSON.parse(raw);
@@ -115,7 +125,6 @@ export class Room extends DurableObject<Env> {
     }
 
     if (msg.type === "typing") {
-      // Без записи в D1, без rate-limit — но c сильным capping в клиенте.
       this.broadcast(
         JSON.stringify({
           type: "typing",
@@ -129,32 +138,48 @@ export class Room extends DurableObject<Env> {
     }
 
     if (msg.type !== "msg") return;
+    const isE2e = att.e2e === true;
     const hasText = typeof msg.text === "string" && msg.text.trim().length > 0;
     const hasAttachment = typeof msg.attachment_id === "string" && msg.attachment_id.length > 0;
-    if (!hasText && !hasAttachment) return;
+    const hasCipher =
+      typeof msg.ciphertext === "string" && msg.ciphertext.length > 0 &&
+      typeof msg.iv === "string" && msg.iv.length > 0 &&
+      typeof msg.key_version === "number" && msg.key_version >= 0;
+
+    if (isE2e) {
+      // E2E rooms accept ciphertext (with optional attachment_id). Plaintext
+      // is silently dropped — clients on these rooms must encrypt.
+      if (!hasCipher && !hasAttachment) return;
+    } else {
+      if (!hasText && !hasAttachment) return;
+    }
 
     if (!(await this.checkWsRateLimit(att.userId))) {
-      try {
-        ws.send(JSON.stringify({ type: "error", code: "rate_limited" }));
-      } catch { /* */ }
+      try { ws.send(JSON.stringify({ type: "error", code: "rate_limited" })); } catch { /* */ }
       return;
     }
 
-    const text = hasText ? msg.text!.slice(0, 4000) : "";
+    const text = !isE2e && hasText ? msg.text!.slice(0, 4000) : "";
+    const ciphertext = isE2e && hasCipher ? msg.ciphertext!.slice(0, 8192) : null;
+    const iv = isE2e && hasCipher ? msg.iv!.slice(0, 64) : null;
+    const keyVersion = isE2e && hasCipher ? msg.key_version! : null;
     const attachmentId = hasAttachment ? msg.attachment_id!.slice(0, 64) : null;
     const clientId =
       typeof msg.client_id === "string" && msg.client_id.length > 0
         ? msg.client_id.slice(0, 64)
         : null;
 
-    let stored: StoredMessage | null = null;
-    if (clientId) {
-      const existing = await this.env.DB
+    const selectExisting = () =>
+      this.env.DB
         .prepare(
-          "SELECT id, client_id, user_id, username, text, created_at, attachment_id FROM messages WHERE room_id = ? AND client_id = ?",
+          "SELECT id, client_id, user_id, username, text, created_at, attachment_id, ciphertext, iv, key_version FROM messages WHERE room_id = ? AND client_id = ?",
         )
         .bind(att.roomId, clientId)
         .first<StoredMessage>();
+
+    let stored: StoredMessage | null = null;
+    if (clientId) {
+      const existing = await selectExisting();
       if (existing) stored = existing;
     }
 
@@ -168,11 +193,17 @@ export class Room extends DurableObject<Env> {
         text,
         created_at: Date.now(),
         attachment_id: attachmentId,
+        ciphertext,
+        iv,
+        key_version: keyVersion,
       };
       try {
         await this.env.DB
           .prepare(
-            "INSERT INTO messages (id, room_id, user_id, username, text, created_at, client_id, attachment_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            `INSERT INTO messages
+               (id, room_id, user_id, username, text, created_at, client_id,
+                attachment_id, ciphertext, iv, key_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .bind(
             stored.id,
@@ -183,16 +214,14 @@ export class Room extends DurableObject<Env> {
             stored.created_at,
             clientId,
             attachmentId,
+            ciphertext,
+            iv,
+            keyVersion,
           )
           .run();
       } catch (_e) {
         if (clientId) {
-          const existing = await this.env.DB
-            .prepare(
-              "SELECT id, client_id, user_id, username, text, created_at, attachment_id FROM messages WHERE room_id = ? AND client_id = ?",
-            )
-            .bind(att.roomId, clientId)
-            .first<StoredMessage>();
+          const existing = await selectExisting();
           if (existing) stored = existing;
           else throw _e;
         } else {
@@ -203,7 +232,7 @@ export class Room extends DurableObject<Env> {
 
     const attachmentPayload = await this.attachmentPayload(stored.attachment_id);
 
-    const out = {
+    const out: Record<string, unknown> = {
       type: "msg",
       id: stored.id,
       client_id: stored.client_id,
@@ -213,12 +242,17 @@ export class Room extends DurableObject<Env> {
       created_at: stored.created_at,
       attachment: attachmentPayload,
     };
+    if (stored.ciphertext) {
+      out.ciphertext = stored.ciphertext;
+      out.iv = stored.iv;
+      out.key_version = stored.key_version;
+    }
 
     this.broadcast(JSON.stringify(out));
 
     if (isNew) {
       this.ctx.waitUntil(this.fanoutNewMessage(att.roomId, stored, attachmentPayload));
-      this.ctx.waitUntil(this.pushOffline(att.roomId, stored));
+      this.ctx.waitUntil(this.pushOffline(att.roomId, stored, isE2e));
     }
   }
 
@@ -243,19 +277,25 @@ export class Room extends DurableObject<Env> {
         .all<{ user_id: string }>();
       if (!room || !results) return;
       const recipients = results.map((r) => r.user_id);
+      const messagePayload: Record<string, unknown> = {
+        id: msg.id,
+        client_id: msg.client_id,
+        user_id: msg.user_id,
+        username: msg.username,
+        text: msg.text,
+        created_at: msg.created_at,
+        attachment,
+      };
+      if (msg.ciphertext) {
+        messagePayload.ciphertext = msg.ciphertext;
+        messagePayload.iv = msg.iv;
+        messagePayload.key_version = msg.key_version;
+      }
       await notifyUsers(this.env, recipients, {
         type: "new_message",
         room_id: roomId,
         room_name: room.name,
-        message: {
-          id: msg.id,
-          client_id: msg.client_id,
-          user_id: msg.user_id,
-          username: msg.username,
-          text: msg.text,
-          created_at: msg.created_at,
-          attachment,
-        },
+        message: messagePayload,
       });
     } catch (e) {
       logError({ at: "fanoutNewMessage", err: (e as Error).message });
@@ -281,7 +321,11 @@ export class Room extends DurableObject<Env> {
     };
   }
 
-  private async pushOffline(roomId: string, msg: StoredMessage): Promise<void> {
+  private async pushOffline(
+    roomId: string,
+    msg: StoredMessage,
+    isE2e: boolean,
+  ): Promise<void> {
     try {
       const online = new Set<string>();
       for (const sock of this.ctx.getWebSockets()) {
@@ -297,7 +341,6 @@ export class Room extends DurableObject<Env> {
         .first<{ name: string }>();
       if (!room) return;
 
-      // Не пушим тем, кто замьютил комнату.
       const { results } = await this.env.DB
         .prepare("SELECT user_id FROM memberships WHERE room_id = ? AND muted = 0")
         .bind(roomId)
@@ -307,13 +350,17 @@ export class Room extends DurableObject<Env> {
         .filter((uid) => uid !== msg.user_id && !online.has(uid));
       if (targets.length === 0) return;
 
-      const body = msg.text && msg.text.length > 0
-        ? msg.text.length > 140 ? msg.text.slice(0, 140) + "…" : msg.text
-        : "📎 вложение";
+      // For E2E rooms the server never sees plaintext, so push previews are
+      // intentionally opaque. For plain rooms we keep the existing snippet.
+      const body = isE2e
+        ? "📩 новое сообщение"
+        : msg.text && msg.text.length > 0
+          ? msg.text.length > 140 ? msg.text.slice(0, 140) + "…" : msg.text
+          : "📎 вложение";
 
       await notifyDevices(this.env.DB, this.env, targets, {
         alert: {
-          title: `${room.name} · ${msg.username}`,
+          title: isE2e ? `${room.name} · 🔒` : `${room.name} · ${msg.username}`,
           body,
         },
         sound: "default",
