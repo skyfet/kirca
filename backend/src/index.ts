@@ -146,7 +146,7 @@ app.doc("/openapi.json", {
     license: { name: "MIT" },
   },
   servers: [
-    { url: "https://kirca-api.gdetemka.workers.dev", description: "production" },
+    { url: "https://kirca-api.archen.workers.dev", description: "production" },
     { url: "http://127.0.0.1:8787", description: "local wrangler dev" },
   ],
   tags: [
