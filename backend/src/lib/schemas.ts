@@ -72,12 +72,28 @@ export const readBody = z.object({
   last_read_at: z.number().int().nonnegative(),
 });
 
-export const uploadSignBody = z.object({
-  mime: z.string().min(1).max(128),
-  size: z.number().int().positive().max(20 * 1024 * 1024), // 20 МБ
-  width: z.number().int().positive().optional(),
-  height: z.number().int().positive().optional(),
-});
+export const uploadSignBody = z
+  .object({
+    mime: z.string().min(1).max(128),
+    size: z.number().int().positive().max(20 * 1024 * 1024), // 20 MB
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+    // E2E fields. When `e2e: true` is set, the worker stops validating mime
+    // against the image whitelist (the body is opaque ciphertext) and instead
+    // requires the per-blob AES key material and the owning room.
+    e2e: z.boolean().optional(),
+    room_id: z.string().min(1).max(64).optional(),
+    iv: z.string().min(1).max(64).optional(),
+    wrapped_key: z.string().min(1).max(256).optional(),
+    wrapped_key_iv: z.string().min(1).max(64).optional(),
+    key_version: z.number().int().nonnegative().optional(),
+  })
+  .refine(
+    (v) =>
+      !v.e2e ||
+      (v.room_id && v.iv && v.wrapped_key && v.wrapped_key_iv && v.key_version != null),
+    "e2e=true requires room_id, iv, wrapped_key, wrapped_key_iv, key_version",
+  );
 
 export const sendMessageBody = z.object({
   client_id: z.string().min(1).max(64),

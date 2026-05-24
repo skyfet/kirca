@@ -1,4 +1,4 @@
-import { getUser, requireAuth, uuid } from "../lib/middleware";
+import { getUser, isRoomAccessible, requireAuth, uuid } from "../lib/middleware";
 import {
   ALLOWED_IMAGE_MIMES,
   attachmentKey,
@@ -39,7 +39,9 @@ const reserveUploadRoute = createRoute({
       }),
       "Reserved.",
     ),
+    400: errorResponse("Missing required E2E fields."),
     401: unauthorized,
+    403: errorResponse("Room not accessible or not an E2E room."),
     415: errorResponse("Unsupported mime."),
     503: errorResponse("Uploads not configured."),
   },
@@ -48,19 +50,53 @@ const reserveUploadRoute = createRoute({
 uploadRoutes.openapi(reserveUploadRoute, async (c) => {
   if (!r2Configured(c.env)) return c.json({ error: "uploads not configured" }, 503);
   const u = getUser(c);
-  const { mime, size, width, height } = c.req.valid("json");
-  if (!ALLOWED_IMAGE_MIMES.has(mime.toLowerCase())) {
+  const body = c.req.valid("json");
+  const e2e = body.e2e === true;
+
+  if (e2e) {
+    // Ciphertext attachment — server cannot inspect the bytes. Skip the
+    // image-mime whitelist and require ownership of an E2E room.
+    if (!body.room_id) return c.json({ error: "room_id required for e2e" }, 400);
+    if (!(await isRoomAccessible(c.env, body.room_id, u.id))) {
+      return c.json({ error: "room not accessible" }, 403);
+    }
+    const room = await c.env.DB
+      .prepare("SELECT e2e FROM rooms WHERE id = ?")
+      .bind(body.room_id)
+      .first<{ e2e: number }>();
+    if (room?.e2e !== 1) return c.json({ error: "room is not e2e" }, 403);
+  } else if (!ALLOWED_IMAGE_MIMES.has(body.mime.toLowerCase())) {
     return c.json({ error: "unsupported mime" }, 415);
   }
+
   const id = uuid();
-  const key = attachmentKey(id, mime);
+  // For E2E we always store as octet-stream on R2 — the real mime lives only
+  // inside the encrypted message body, where the client put it.
+  const storedMime = e2e ? "application/octet-stream" : body.mime;
+  const key = attachmentKey(id, storedMime);
   const now = Date.now();
   await c.env.DB
     .prepare(
-      `INSERT INTO attachments (id, user_id, r2_key, mime, size, width, height, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO attachments
+         (id, user_id, r2_key, mime, size, width, height, created_at,
+          wrapped_key, wrapped_key_iv, iv, key_version, room_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(id, u.id, key, mime, size, width ?? null, height ?? null, now)
+    .bind(
+      id,
+      u.id,
+      key,
+      storedMime,
+      body.size,
+      body.width ?? null,
+      body.height ?? null,
+      now,
+      e2e ? body.wrapped_key! : null,
+      e2e ? body.wrapped_key_iv! : null,
+      e2e ? body.iv! : null,
+      e2e ? body.key_version! : null,
+      e2e ? body.room_id! : null,
+    )
     .run();
   return c.json(
     {
