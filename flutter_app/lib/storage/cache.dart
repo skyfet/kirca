@@ -12,13 +12,26 @@ class CachedAttachment {
   final String mime;
   final int? width;
   final int? height;
+  // E2E wrapping fields. Non-null only on E2E attachments. The bytes at [url]
+  // (or behind /attachments/:id) are AES-GCM ciphertext; the client decrypts
+  // using the per-blob key unwrapped from [wrappedKey] under the room key.
+  final String? wrappedKey;
+  final String? wrappedKeyIv;
+  final String? iv;
+  final int? keyVersion;
   const CachedAttachment({
     this.id,
     this.url,
     required this.mime,
     this.width,
     this.height,
+    this.wrappedKey,
+    this.wrappedKeyIv,
+    this.iv,
+    this.keyVersion,
   });
+
+  bool get isE2e => wrappedKey != null;
 }
 
 class CachedMessage {
@@ -27,11 +40,17 @@ class CachedMessage {
   final String? clientId;
   final String userId;
   final String username;
+  /// Plaintext for the bubble. For E2E rooms this is the decrypted form (set
+  /// after the chat screen decodes ciphertext) — empty until decryption runs.
   final String text;
   final int createdAt;
   final int? editedAt;
   final int? deletedAt;
   final CachedAttachment? attachment;
+  // E2E fields. Set on E2E rooms; null on plain rooms.
+  final String? ciphertext;
+  final String? iv;
+  final int? keyVersion;
 
   const CachedMessage({
     required this.id,
@@ -44,7 +63,12 @@ class CachedMessage {
     this.editedAt,
     this.deletedAt,
     this.attachment,
+    this.ciphertext,
+    this.iv,
+    this.keyVersion,
   });
+
+  bool get isE2e => ciphertext != null;
 
   factory CachedMessage.fromRow(Map<String, dynamic> r) {
     final attId = r['attachment_id'] as String?;
@@ -66,7 +90,14 @@ class CachedMessage {
               mime: (r['attachment_mime'] as String?) ?? 'image/*',
               width: r['attachment_width'] as int?,
               height: r['attachment_height'] as int?,
+              wrappedKey: r['attachment_wrapped_key'] as String?,
+              wrappedKeyIv: r['attachment_wrapped_key_iv'] as String?,
+              iv: r['attachment_iv'] as String?,
+              keyVersion: r['attachment_key_version'] as int?,
             ),
+      ciphertext: r['ciphertext'] as String?,
+      iv: r['iv'] as String?,
+      keyVersion: r['key_version'] as int?,
     );
   }
 }
@@ -81,6 +112,8 @@ class CachedRoom {
   final int unread;
   final String? lastText;
   final int? lastAt;
+  final bool e2e;
+  final int keyVersion;
 
   const CachedRoom({
     required this.id,
@@ -92,6 +125,8 @@ class CachedRoom {
     required this.unread,
     this.lastText,
     this.lastAt,
+    this.e2e = false,
+    this.keyVersion = 0,
   });
 
   factory CachedRoom.fromRow(Map<String, dynamic> r) => CachedRoom(
@@ -104,6 +139,8 @@ class CachedRoom {
         unread: r['unread'] as int? ?? 0,
         lastText: r['last_text'] as String?,
         lastAt: r['last_at'] as int?,
+        e2e: (r['e2e'] as int? ?? 0) == 1,
+        keyVersion: r['key_version'] as int? ?? 0,
       );
 }
 
@@ -290,6 +327,9 @@ class RoomsCache {
     final isMember = (r['is_member'] is num)
         ? (r['is_member'] as num).toInt() == 1
         : r['is_member'] == true;
+    final e2e = (r['e2e'] is num)
+        ? (r['e2e'] as num).toInt() == 1
+        : r['e2e'] == true;
     await x.insert(
       'rooms',
       {
@@ -303,6 +343,8 @@ class RoomsCache {
         'last_text': r['last_text']?.toString(),
         'last_at': (r['last_at'] as num?)?.toInt(),
         'updated_at': updatedAt,
+        'e2e': e2e ? 1 : 0,
+        'key_version': (r['key_version'] as num?)?.toInt() ?? 0,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
@@ -387,6 +429,24 @@ class MessagesCache {
     _notifier.notify(roomId);
   }
 
+  /// Set the decrypted plaintext of an E2E message after the chat screen
+  /// has unwrapped it. Leaves the ciphertext columns intact so re-decryption
+  /// remains possible if needed.
+  static Future<void> setDecryptedText(
+    String roomId,
+    String id,
+    String text,
+  ) async {
+    final db = await AppDb.open();
+    await db.update(
+      'messages',
+      {'text': text},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    _notifier.notify(roomId);
+  }
+
   static Future<void> _insertMsgRaw(
     DatabaseExecutor x,
     String roomId,
@@ -395,6 +455,24 @@ class MessagesCache {
     final id = m['id']?.toString();
     if (id == null) return;
     final att = m['attachment'] as Map<String, dynamic>?;
+    // Preserve any locally-decrypted plaintext we already cached for this id —
+    // server replays its empty `text` field for E2E rows, so blind overwrite
+    // would wipe the visible message bubble.
+    String text = m['text']?.toString() ?? '';
+    final ciphertext = m['ciphertext']?.toString();
+    if (ciphertext != null && text.isEmpty) {
+      final existing = await x.query(
+        'messages',
+        columns: ['text'],
+        where: 'id = ?',
+        whereArgs: [id],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) {
+        final prev = existing.first['text'] as String?;
+        if (prev != null && prev.isNotEmpty) text = prev;
+      }
+    }
     await x.insert(
       'messages',
       {
@@ -403,7 +481,7 @@ class MessagesCache {
         'client_id': m['client_id']?.toString(),
         'user_id': m['user_id']?.toString() ?? '',
         'username': m['username']?.toString() ?? '',
-        'text': m['text']?.toString() ?? '',
+        'text': text,
         'created_at': (m['created_at'] as num?)?.toInt() ?? 0,
         'edited_at': (m['edited_at'] as num?)?.toInt(),
         'deleted_at': (m['deleted_at'] as num?)?.toInt(),
@@ -412,6 +490,13 @@ class MessagesCache {
         'attachment_mime': att?['mime']?.toString(),
         'attachment_width': (att?['width'] as num?)?.toInt(),
         'attachment_height': (att?['height'] as num?)?.toInt(),
+        'ciphertext': ciphertext,
+        'iv': m['iv']?.toString(),
+        'key_version': (m['key_version'] as num?)?.toInt(),
+        'attachment_wrapped_key': att?['wrapped_key']?.toString(),
+        'attachment_wrapped_key_iv': att?['wrapped_key_iv']?.toString(),
+        'attachment_iv': att?['iv']?.toString(),
+        'attachment_key_version': (att?['key_version'] as num?)?.toInt(),
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );

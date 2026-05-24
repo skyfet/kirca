@@ -67,13 +67,74 @@ class Api {
     return (_decode(r))['rooms'] as List<dynamic>;
   }
 
-  Future<Map<String, dynamic>> createRoom(String name, {bool isPublic = true}) async {
+  Future<Map<String, dynamic>> createRoom(
+    String name, {
+    bool isPublic = true,
+    bool e2e = false,
+  }) async {
     final r = await http.post(
       Uri.parse('${Config.apiBase}/rooms'),
       headers: _headers,
-      body: jsonEncode({'name': name, 'is_public': isPublic}),
+      body: jsonEncode({'name': name, 'is_public': isPublic, 'e2e': e2e}),
     );
     return _decode(r);
+  }
+
+  // ---- identity / E2E ----
+  Future<Map<String, dynamic>> publishIdentity({
+    required String identityPub,
+    required String identityPrivWrapped,
+    required String identityPrivIv,
+    required String recoverySalt,
+  }) async {
+    final r = await http.put(
+      Uri.parse('${Config.apiBase}/me/identity'),
+      headers: _headers,
+      body: jsonEncode({
+        'identity_pub': identityPub,
+        'identity_priv_wrapped': identityPrivWrapped,
+        'identity_priv_iv': identityPrivIv,
+        'recovery_salt': recoverySalt,
+      }),
+    );
+    return _decode(r);
+  }
+
+  Future<Map<String, dynamic>> getMyIdentity() async {
+    final r = await http.get(
+      Uri.parse('${Config.apiBase}/me/identity'),
+      headers: _headers,
+    );
+    return _decode(r);
+  }
+
+  Future<Map<String, dynamic>> getUserIdentity(String userId) async {
+    final r = await http.get(
+      Uri.parse('${Config.apiBase}/users/$userId/identity'),
+      headers: _headers,
+    );
+    return _decode(r);
+  }
+
+  Future<Map<String, dynamic>> publishRoomKeys(
+    String roomId, {
+    required int keyVersion,
+    required List<Map<String, String>> keys,
+  }) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/keys'),
+      headers: _headers,
+      body: jsonEncode({'key_version': keyVersion, 'keys': keys}),
+    );
+    return _decode(r);
+  }
+
+  Future<List<dynamic>> getRoomKeys(String roomId) async {
+    final r = await http.get(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/keys'),
+      headers: _headers,
+    );
+    return (_decode(r))['keys'] as List<dynamic>;
   }
 
   Future<List<dynamic>> history(String roomId, {int? after, int? before, int? limit}) async {
@@ -217,11 +278,25 @@ class Api {
   }
 
   // ---- messages: edit / delete / read ----
-  Future<void> editMessage(String roomId, String msgId, String text) async {
+  Future<void> editMessage(
+    String roomId,
+    String msgId,
+    String text, {
+    String? ciphertext,
+    String? iv,
+    int? keyVersion,
+  }) async {
+    final body = ciphertext != null
+        ? {
+            'ciphertext': ciphertext,
+            'iv': iv,
+            'key_version': keyVersion,
+          }
+        : {'text': text};
     final r = await http.patch(
       Uri.parse('${Config.apiBase}/rooms/$roomId/messages/$msgId'),
       headers: _headers,
-      body: jsonEncode({'text': text}),
+      body: jsonEncode(body),
     );
     _decode(r);
   }
@@ -249,16 +324,33 @@ class Api {
     required int size,
     int? width,
     int? height,
+    // E2E fields. When set, server skips the mime whitelist and stores wrapping
+    // material so other members can decrypt.
+    bool e2e = false,
+    String? roomId,
+    String? iv,
+    String? wrappedKey,
+    String? wrappedKeyIv,
+    int? keyVersion,
   }) async {
+    final body = <String, dynamic>{
+      'mime': mime,
+      'size': size,
+      if (width != null) 'width': width,
+      if (height != null) 'height': height,
+    };
+    if (e2e) {
+      body['e2e'] = true;
+      body['room_id'] = roomId;
+      body['iv'] = iv;
+      body['wrapped_key'] = wrappedKey;
+      body['wrapped_key_iv'] = wrappedKeyIv;
+      body['key_version'] = keyVersion;
+    }
     final r = await http.post(
       Uri.parse('${Config.apiBase}/uploads'),
       headers: _headers,
-      body: jsonEncode({
-        'mime': mime,
-        'size': size,
-        if (width != null) 'width': width,
-        if (height != null) 'height': height,
-      }),
+      body: jsonEncode(body),
     );
     return _decode(r);
   }
@@ -274,6 +366,17 @@ class Api {
       body: bytes,
     );
     _decode(r);
+  }
+
+  Future<List<int>> downloadAttachment(String attachmentId) async {
+    final r = await http.get(
+      Uri.parse('${Config.apiBase}/attachments/$attachmentId'),
+      headers: {if (token != null) 'Authorization': 'Bearer $token'},
+    );
+    if (r.statusCode >= 400) {
+      throw ApiException('download failed (${r.statusCode})', r.statusCode);
+    }
+    return r.bodyBytes;
   }
 
   Map<String, dynamic> _decode(http.Response r) {

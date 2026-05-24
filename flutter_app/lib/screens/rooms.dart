@@ -2,7 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
+import 'dart:convert';
+
 import '../api.dart';
+import '../crypto/e2e.dart';
+import '../crypto/key_store.dart';
+import '../crypto/room_keys.dart';
 import '../state.dart';
 import '../storage/cache.dart';
 import '../theme/app_background.dart';
@@ -24,6 +29,7 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
   Future<void> _newRoom() async {
     final ctrl = TextEditingController();
     bool isPublic = true;
+    bool e2e = false;
     final ok = await showDialog<bool>(
       context: context,
       barrierColor: Colors.black54,
@@ -68,7 +74,33 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
                       ),
                       GlassSwitch(
                         value: isPublic,
-                        onChanged: (v) => setLocal(() => isPublic = v),
+                        // E2E forces private — ignore taps on the public
+                        // switch in that mode rather than disabling it (the
+                        // glass widget set wants a non-null callback).
+                        onChanged: (v) {
+                          if (e2e) return;
+                          setLocal(() => isPublic = v);
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          e2e
+                              ? '🔒 Сквозное шифрование — сервер видит только шифротекст'
+                              : 'Сквозное шифрование выключено',
+                          style: const TextStyle(color: AppColors.onGlassMuted, fontSize: 12),
+                        ),
+                      ),
+                      GlassSwitch(
+                        value: e2e,
+                        onChanged: (v) => setLocal(() {
+                          e2e = v;
+                          if (v) isPublic = false; // E2E rooms are always private
+                        }),
                       ),
                     ],
                   ),
@@ -123,9 +155,50 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
       final auth = ref.read(authProvider);
       if (auth == null) return;
       try {
-        final r = await Api(token: auth.token)
-            .createRoom(ctrl.text.trim(), isPublic: isPublic);
+        final api = Api(token: auth.token);
+        // Block E2E room creation if we don't have a local identity yet —
+        // we'd have no public key to wrap the room key for ourselves.
+        if (e2e && (await KeyStore.loadIdentity()) == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Сначала настрой ключи шифрования в профиле'),
+            ));
+          }
+          return;
+        }
+        final r = await api.createRoom(
+          ctrl.text.trim(),
+          isPublic: e2e ? false : isPublic,
+          e2e: e2e,
+        );
         await RoomsCache.upsert({...r, 'is_member': true, 'role': 'owner'});
+
+        if (e2e) {
+          // Generate the room key, wrap it for ourselves, publish.
+          final identity = await KeyStore.loadIdentity();
+          if (identity != null) {
+            final roomKey = E2E.newRoomKey();
+            final sealed = await E2E.sealRoomKey(
+              recipientPubKey: identity.publicKey,
+              roomKey: roomKey,
+            );
+            await api.publishRoomKeys(
+              r['id'] as String,
+              keyVersion: (r['key_version'] as num?)?.toInt() ?? 1,
+              keys: [
+                {
+                  'member_user_id': auth.userId,
+                  'sealed': base64Encode(sealed),
+                },
+              ],
+            );
+            RoomKeyCache.put(
+              r['id'] as String,
+              (r['key_version'] as num?)?.toInt() ?? 1,
+              roomKey,
+            );
+          }
+        }
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
@@ -322,6 +395,8 @@ class _RoomTile extends ConsumerWidget {
                     roomName: room.name,
                     isPublic: room.isPublic,
                     muted: room.muted,
+                    e2e: room.e2e,
+                    keyVersion: room.keyVersion,
                   ),
                 ),
               ),
