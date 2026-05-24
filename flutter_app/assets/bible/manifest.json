@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "source": "YLT (Young's Literal Translation, 1862/1898, public domain)",
+  "source_url": "https://raw.githubusercontent.com/Living-Word-Bibles/ylt-online/main/YLT/YLT_bible.json",
+  "source_sha256": "180172eb12572d78263e1d12f5a1451a12d4e6d91ddfe218654f2dbdbad05e32",
+  "list_size": 512,
+  "min_word_len": 4,
+  "phrase_word_count": 24,
+  "bits_per_word": 9,
+  "books": [
+    {
+      "idx": 0,
+      "name": "Genesis",
+      "slug": "genesis",
+      "file": "00_genesis.txt",
+      "sha256": "b0fd9cb3fa9a92998c89f61b2857cb1c621dc2d19efe103706d1e01152754194"
+    },
+    {
+      "idx": 1,
+      "name": "Exodus",
+      "slug": "exodus",
+      "file": "01_exodus.txt",
+      "sha256": "7265cc9527c09a80ea7d10925395293ab86d24b733458cd70e8d98dec94d98b3"
+    },
+    {
+      "idx": 2,
+      "name": "Leviticus",
+      "slug": "leviticus",
+      "file": "02_leviticus.txt",
+      "sha256": "ce5f3e48c7151df5eb73d6c987d963d4e21787e1b4fd7de87b1fa4f88e0474e6"
+    },
+    {
+      "idx": 3,
+      "name": "Numbers",
+      "slug": "numbers",
+      "file": "03_numbers.txt",
+      "sha256": "f6d88203f0e5d7f3a923755aaee86fc797f4f17a8ad1dc3b70d6bac339b88bed"
+    },
+    {
+      "idx": 4,
+      "name": "Deuteronomy",
+      "slug": "deuteronomy",
+      "file": "04_deuteronomy.txt",
+      "sha256": "b10b98daabbb97f24254021a7b12d43cd111295d66f59f1cd3d496d37f2cdcc2"
+    },
+    {
+      "idx": 5,
+      "name": "Joshua",
+      "slug": "joshua",
+      "file": "05_joshua.txt",
+      "sha256": "6ebcf2f998373f3e565496518c7574d6805f932367e8a08e7689762d25bae950"
+    },
+    {
+      "idx": 6,
+      "name": "Judges",
+      "slug": "judges",
+      "file": "06_judges.txt",
+      "sha256": "de98a7253d22a8a612ec3aa42e5e7d0833cefff8e35a068c319c279b42310987"
+    },
+    {
+      "idx": 7,
+      "name": "1 Samuel",
+      "slug": "1_samuel",
+      "file": "07_1_samuel.txt",
+      "sha256": "ab138cc79b2a355329300346d688c31c2658ef60ca1746781794a7048751738b"
+    },
+    {
+      "idx": 8,
+      "name": "2 Samuel",
+      "slug": "2_samuel",
+      "file": "08_2_samuel.txt",
+      "sha256": "ba9f02f40cf657c033c837db1530ccbacc72afd3b8a7d13b5445ddf59cee0280"
+    },
+    {
+      "idx": 9,
+      "name": "1 Kings",
+      "slug": "1_kings",
+      "file": "09_1_kings.txt",
+      "sha256": "82c2e4a21f7fa457658aa9317ece2af6644aaa46f5336bfe5367b11467945a17"
+    },
+    {
+      "idx": 10,
+      "name": "Psalm",
+      "slug": "psalms",
+      "file": "10_psalms.txt",
+      "sha256": "2234af5f3278a9c4a993f85d9dacb8507e37ef518adb21ae83d9cf88d6b1ce57"
+    },
+    {
+      "idx": 11,
+      "name": "Isaiah",
+      "slug": "isaiah",
+      "file": "11_isaiah.txt",
+      "sha256": "d34b140d52aba3c434d9d60320bd72c1ab117fb118753eaec646bac1bdcb3e06"
+    },
+    {
+      "idx": 12,
+      "name": "Matthew",
+      "slug": "matthew",
+      "file": "12_matthew.txt",
+      "sha256": "04301a5b4183e5c8c954c59686cafd17bec9cb09d502f5027b2a11bc166fa5ac"
+    },
+    {
+      "idx": 13,
+      "name": "Mark",
+      "slug": "mark",
+      "file": "13_mark.txt",
+      "sha256": "40763aa42ce2b1adcec0bfd34448f7cb6f441cd67818a6bed189f180f6310de6"
+    },
+    {
+      "idx": 14,
+      "name": "Luke",
+      "slug": "luke",
+      "file": "14_luke.txt",
+      "sha256": "39eb6318a4295e6272fb2878902c501373bf6d45a00ab9c0613f2bee23fbc91d"
+    },
+    {
+      "idx": 15,
+      "name": "John",
+      "slug": "john",
+      "file": "15_john.txt",
+      "sha256": "0ea8546ca826bb3c3ab29971a5a7d15c74c7ac832695003f25f235c30cf6f2a7"
+    },
+    {
+      "idx": 16,
+      "name": "Acts",
+      "slug": "acts",
+      "file": "16_acts.txt",
+      "sha256": "23a3bf13c37762c9e1317f19a730994499f35d1292f7eef8769f1286fdaab21b"
+    },
+    {
+      "idx": 17,
+      "name": "Romans",
+      "slug": "romans",
+      "file": "17_romans.txt",
+      "sha256": "53ba6c19579b410ff155940b51c696119e273ebc3b091ae23ee6bfea398160e7"
+    },
+    {
+      "idx": 18,
+      "name": "1 Corinthians",
+      "slug": "1_corinthians",
+      "file": "18_1_corinthians.txt",
+      "sha256": "1de0f0969dde2288b798d58a31484a31d94b40665c229f0402476321807221d4"
+    },
+    {
+      "idx": 19,
+      "name": "2 Corinthians",
+      "slug": "2_corinthians",
+      "file": "19_2_corinthians.txt",
+      "sha256": "7491945d00ead43ee9787692f451a7c84305852621db1a663756fc1a2b9e2515"
+    },
+    {
+      "idx": 20,
+      "name": "Galatians",
+      "slug": "galatians",
+      "file": "20_galatians.txt",
+      "sha256": "ff7b2782e72ca15372648245b718497bf5245421ab1bc299688373ce4e54cf4a"
+    },
+    {
+      "idx": 21,
+      "name": "Ephesians",
+      "slug": "ephesians",
+      "file": "21_ephesians.txt",
+      "sha256": "ec492c2d75663d8a86af45337db0e3ccbf2e35e01c7396f26e91ea8496343ed0"
+    },
+    {
+      "idx": 22,
+      "name": "Hebrews",
+      "slug": "hebrews",
+      "file": "22_hebrews.txt",
+      "sha256": "68b7de3d21d61fc56dfddf3b956977b0efe1fd76a77662f229af025dbdfb991a"
+    },
+    {
+      "idx": 23,
+      "name": "Revelation",
+      "slug": "revelation",
+      "file": "23_revelation.txt",
+      "sha256": "006063f73afd34bef0c96a8fbe92bc035a137e76268aaa28a4a6469b08b60298"
+    }
+  ]
+}
