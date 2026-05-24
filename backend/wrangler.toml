@@ -18,7 +18,7 @@ R2_PUBLIC_BASE = ""
 [[d1_databases]]
 binding = "DB"
 database_name = "kirca-api"
-database_id = "b5ddc653-b440-4cf2-94a4-61d1f6ef3be3"
+database_id = "10d22275-894a-4a23-9188-000d5667c963"
 
 [[durable_objects.bindings]]
 name = "ROOM"
@@ -67,7 +67,7 @@ R2_PUBLIC_BASE = ""
 [[env.staging.d1_databases]]
 binding = "DB"
 database_name = "kirca-api-staging"
-database_id = "REPLACE_ME"
+database_id = "b048752e-38ff-4879-8fcb-3c8c7f64689f"
 
 [[env.staging.durable_objects.bindings]]
 name = "ROOM"
