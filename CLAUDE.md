@@ -22,13 +22,15 @@ cd backend
 npx wrangler d1 migrations apply kirca-api --local
 npx wrangler dev --local --port 8787 &
 # wait for /healthz to return 200
-npx newman run test/kirca-api.postman_collection.json \
-  -e test/kirca-api.postman_environment.json \
-  --env-var baseUrl=http://127.0.0.1:8787 \
-  --reporters cli
+npm run test:e2e:local
 ```
 
 All assertions must pass. If any fail, fix and re-run — do not push.
+
+`test:e2e:local` bakes in `baseUrl=http://127.0.0.1:8787`. The sibling
+script `test:e2e:prod` uses `baseUrl` from `kirca-api.postman_environment.json`
+and is reserved for the post-deploy smoke that CI runs against the
+deployed worker — don't use it pre-push.
 
 ### Flutter (`flutter_app/`)
 
@@ -36,6 +38,8 @@ All assertions must pass. If any fail, fix and re-run — do not push.
 cd flutter_app
 flutter analyze
 flutter test
+# To regenerate golden PNGs after an intentional UI change:
+flutter test --update-goldens
 ```
 
 ## Config files: no Cyrillic

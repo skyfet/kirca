@@ -204,14 +204,16 @@ ROOM=...
 curl -s $BASE/rooms/$ROOM/history -H "Authorization: Bearer $TOKEN" | jq             # []
 ```
 
-### 5.2. E2E Newman (то, что гоняет CI)
+### 5.2. E2E Newman против прода (то, что гоняет CI после деплоя)
 
 ```bash
 cd backend
-npm run test:e2e
+npm run test:e2e:prod
 ```
 
-Должно всё зелёное. Если падает на rate-limit — подожди час или вытри `kv_ratelimit` / создай нового юзера (Newman так и делает — рандомизирует username per-run).
+Бьёт по `baseUrl` из `test/kirca-api.postman_environment.json` — там должен быть твой прод-URL (см. §1.4). Должно всё зелёное. Если падает на rate-limit — подожди час или вытри `kv_ratelimit` / создай нового юзера (Newman так и делает — рандомизирует username per-run).
+
+Для прогонов до пуша код-чейнджей используй `npm run test:e2e:local` против локального воркера — см. `CLAUDE.md`.
 
 ### 5.3. Клиентский smoke (золотой путь)
 

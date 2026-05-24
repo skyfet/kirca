@@ -21,7 +21,7 @@ Workflow в `.github/workflows/backend.yml` срабатывает на push в 
 ### Что произойдёт на push
 
 ```
-push → checkout → npm ci → tsc --noEmit → npm test → wrangler d1 migrations apply → wrangler deploy → newman e2e
+push → checkout → npm ci → tsc --noEmit → npm test → wrangler d1 migrations apply → wrangler deploy → newman e2e (prod)
 ```
 
 `npm test` гонит юнит-тесты (vitest-pool-workers поднимает воркер в miniflare). Падают — деплой отменяется.

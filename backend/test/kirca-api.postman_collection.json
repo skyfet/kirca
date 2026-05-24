@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Kirca API E2E",
-    "description": "Newman-runnable smoke suite. Run via `npm run test:e2e` (locally or in CI). baseUrl is read from the environment file or overridden via `--env-var baseUrl=...`.",
+    "description": "Newman-runnable smoke suite. Use `npm run test:e2e:local` against `wrangler dev` for pre-push checks; `npm run test:e2e:prod` runs the same suite against the deployed worker (baseUrl from the environment file) and is what CI fires after a successful deploy.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {

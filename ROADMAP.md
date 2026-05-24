@@ -121,12 +121,16 @@ src/
 ```
 
 ### Тесты
-`vitest` + `@cloudflare/vitest-pool-workers` — позволяет гонять Worker в нативной среде, с реальной D1 (in-memory). Заведи хотя бы:
-- Регистрация → логин → JWT валиден.
-- Создать комнату → история пустая.
-- Два клиента в одной комнате → сообщение от A приходит B.
 
-Это окупится с первого же рефакторинга.
+Сейчас уже есть:
+- `vitest` + `@cloudflare/vitest-pool-workers` — юниты на auth/dedup/http/user_hub (`backend/test/unit/`); прогоняются `npm test` и в CI до деплоя.
+- Postman/Newman e2e — 49 запросов / 75 ассертов, гонится локально (`npm run test:e2e:local`) и в CI после деплоя (`npm run test:e2e:prod`). См. `CLAUDE.md` / `LAUNCH.md §5.2`.
+- Flutter golden-suite — 6 кейсов для `RoomTileContent`, `GlassButton`, `AppBackground` (`flutter_app/test/rooms_tile_golden_test.dart`).
+
+Чего ещё не хватает:
+- Юнит на WS-комнату (Durable Object): два клиента, A→B доставка + дедуп на реконнекте.
+- Contract-тест против `openapi.json` (например, prism mock + diff с реальными ответами).
+- Виджет-тесты на состояния Riverpod-провайдеров (sent/sending/failed для сообщений) — не золотые, а behavioural.
 
 ### Конфиг и env per stage
 Сейчас один воркер. Сделай два:

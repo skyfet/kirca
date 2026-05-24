@@ -44,5 +44,5 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      - name: E2E smoke (Newman)
-        run: npm run test:e2e
+      - name: E2E smoke (Newman, prod)
+        run: npm run test:e2e:prod

@@ -11,7 +11,8 @@
     "db:migrate:remote": "wrangler d1 migrations apply kirca-api --remote",
     "db:migrate:staging": "wrangler d1 migrations apply kirca-api-staging --remote --env staging",
     "test": "vitest run",
-    "test:e2e": "newman run test/kirca-api.postman_collection.json -e test/kirca-api.postman_environment.json --reporters cli"
+    "test:e2e:local": "newman run test/kirca-api.postman_collection.json -e test/kirca-api.postman_environment.json --env-var baseUrl=http://127.0.0.1:8787 --reporters cli",
+    "test:e2e:prod": "newman run test/kirca-api.postman_collection.json -e test/kirca-api.postman_environment.json --reporters cli"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.5.40",
