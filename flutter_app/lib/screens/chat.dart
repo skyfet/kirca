@@ -103,18 +103,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   String? _lastTailId;
   bool _didInitialScroll = false;
 
+  // Cached at initState: Element is `defunct` by the time `dispose` runs (after
+  // super.unmount), and flutter_riverpod's `ref.read` checks context.mounted —
+  // touching `ref` from `dispose` throws and aborts the rest of cleanup.
+  late final StateController<String?> _currentRoomCtrl;
+  // Cached token so async callbacks fired after dispose don't need `ref`.
+  String? _token;
+
   @override
   void initState() {
     super.initState();
     _muted = widget.muted;
+    _currentRoomCtrl = ref.read(currentRoomProvider.notifier);
+    _token = ref.read(authProvider)?.token;
     WidgetsBinding.instance.addObserver(this);
     _scroll.addListener(_onScroll);
     // Сообщаем глобальному WS, что активная комната — эта, чтобы не бампить
     // unread на свои же входящие сюда.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_disposed) {
-        ref.read(currentRoomProvider.notifier).state = widget.roomId;
-      }
+      if (!_disposed) _currentRoomCtrl.state = widget.roomId;
     });
     _hydrateAndConnect();
   }
@@ -154,13 +161,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   Future<void> _decryptIfNeeded(CachedMessage m) async {
+    if (_disposed) return;
     if (!widget.e2e || !m.isE2e || m.text.isNotEmpty || m.deletedAt != null) {
       return;
     }
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
+    final token = _token;
+    if (token == null) return;
     final v = m.keyVersion ?? widget.keyVersion;
-    final key = await RoomKeyCache.get(Api(token: auth.token), widget.roomId, v);
+    final key = await RoomKeyCache.get(Api(token: token), widget.roomId, v);
     if (key == null) return;
     try {
       final plaintext = await E2E.decryptMessage(
@@ -370,13 +378,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   Future<void> _maybeMarkRead() async {
+    if (_disposed) return;
     if (_lastSeenAt <= _lastReadSent) return;
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
+    final token = _token;
+    if (token == null) return;
     final ts = _lastSeenAt;
     _lastReadSent = ts;
     try {
-      await Api(token: auth.token).markRead(widget.roomId, ts);
+      await Api(token: token).markRead(widget.roomId, ts);
       await RoomsCache.setUnread(widget.roomId, 0);
     } catch (_) {}
   }
@@ -706,10 +715,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   void dispose() {
     _disposed = true;
     // Снимаем флаг активной комнаты — теперь фоновые сообщения снова
-    // увеличивают unread.
-    final notifier = ref.read(currentRoomProvider.notifier);
-    if (notifier.state == widget.roomId) {
-      notifier.state = null;
+    // увеличивают unread. Используем закешированный controller: на момент
+    // dispose Element уже defunct и ref.read бросил бы StateError, прерывая
+    // остаток cleanup (в т.ч. закрытие WS).
+    if (_currentRoomCtrl.state == widget.roomId) {
+      _currentRoomCtrl.state = null;
     }
     WidgetsBinding.instance.removeObserver(this);
     _reconnectTimer?.cancel();
@@ -737,6 +747,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     ref.listen<AsyncValue<List<CachedMessage>>>(
       messagesProvider(widget.roomId),
       (prev, next) {
+        if (_disposed) return;
         final list = next.valueOrNull;
         if (list == null || list.isEmpty) return;
         _lastSeenAt = max(_lastSeenAt, list.last.createdAt);
@@ -1178,7 +1189,7 @@ class _AttachmentImageState extends State<_AttachmentImage> {
         child: CircularProgressIndicator(strokeWidth: 2),
       ),
     );
-    final brokenIcon = const SizedBox(
+    const brokenIcon = SizedBox(
       width: 220,
       height: 160,
       child: Center(
@@ -1191,12 +1202,35 @@ class _AttachmentImageState extends State<_AttachmentImage> {
       if (_bytes == null) return placeholder;
       return Image.memory(_bytes!, width: 220, fit: BoxFit.cover);
     }
+
+    // Non-E2E. Prefer public R2 URL when present; otherwise hit the worker's
+    // authed /attachments/:id passthrough (used in dev when R2_PUBLIC_BASE
+    // isn't configured).
     final url = widget.attachment.url;
-    if (url == null) return brokenIcon;
+    final att = widget.attachment;
+    final String? effectiveUrl;
+    final Map<String, String>? headers;
+    if (url != null && url.isNotEmpty) {
+      effectiveUrl = url;
+      headers = null;
+    } else if (att.id != null) {
+      effectiveUrl = '${Config.apiBase}/attachments/${att.id}';
+      headers = widget.token.isEmpty
+          ? null
+          : {'Authorization': 'Bearer ${widget.token}'};
+    } else {
+      return brokenIcon;
+    }
+
     return Image.network(
-      url,
+      effectiveUrl,
       width: 220,
       fit: BoxFit.cover,
+      headers: headers,
+      loadingBuilder: (_, child, progress) {
+        if (progress == null) return child;
+        return placeholder;
+      },
       errorBuilder: (_, __, ___) => brokenIcon,
     );
   }
