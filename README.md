@@ -1,29 +1,49 @@
 # kirca
 
-Простой чат: Cloudflare Worker + Durable Objects + D1 для бэкенда, Flutter — для iOS-клиента.
+Простой чат: Cloudflare Worker + Durable Objects + D1 для бэкенда, Flutter — для iOS-клиента. Все сообщения шифруются end-to-end в приватных комнатах (X25519 + AES-GCM, ключ комнаты sealed под публичный ключ каждого участника).
 
 См. также `LAUNCH.md` (пошаговый чек-лист публичного запуска), `DEPLOY.md` (CI/CD) и `ROADMAP.md` (что улучшать дальше).
 
 ```
 kirca/
-├── backend/           # Cloudflare Worker (TypeScript, Hono) — деплоится как `kirca-api`
+├── backend/                  # Cloudflare Worker (TypeScript, Hono) — деплоится как `kirca-api`
 │   ├── src/
-│   │   ├── index.ts   # HTTP API + WS upgrade
-│   │   ├── room.ts    # Durable Object (одна на комнату)
-│   │   ├── openapi.ts # OpenAPI 3.1 спека (источник правды для /docs)
-│   │   ├── home.ts    # HTML главной (/)
-│   │   └── docs.ts    # HTML с Scalar UI (/docs)
-│   ├── migrations/0001_init.sql
+│   │   ├── index.ts          # композиция: middleware + app.route() на под-роутеры
+│   │   ├── room.ts           # Durable Object одной комнаты (presence, WS-рассылка, typing)
+│   │   ├── user_hub.ts       # Durable Object per-user (online-флаг, fan-out push)
+│   │   ├── home.ts           # HTML главной (/)
+│   │   ├── docs.ts           # HTML с Scalar UI (/docs)
+│   │   ├── routes/
+│   │   │   ├── auth.ts       # register/login/logout/change-password
+│   │   │   ├── rooms.ts      # CRUD комнат, join/invite/leave, mute
+│   │   │   ├── messages.ts   # history, edit/delete, read-receipts
+│   │   │   ├── profile.ts    # /me, avatar, delete-account, logout-all
+│   │   │   ├── ws.ts         # WS upgrade → Room DO
+│   │   │   ├── devices.ts    # APNs token registration
+│   │   │   ├── uploads.ts    # R2 attachments (signed POST → blob URL)
+│   │   │   └── e2e.ts        # identity bundle publish/get, room key wrap/list
+│   │   └── lib/              # auth (scrypt), apns, rate_limit, openapi, schemas, ...
+│   ├── migrations/0001…0005_*.sql
+│   ├── test/unit/            # vitest-pool-workers
+│   ├── test/kirca-api.postman_collection.json
 │   ├── wrangler.toml
 │   ├── package.json
 │   └── tsconfig.json
-└── flutter_app/       # Flutter клиент (Riverpod), bundle id ai.kirca.app
+└── flutter_app/              # Flutter клиент (Riverpod), bundle id ai.kirca.app
     ├── lib/
     │   ├── main.dart
-    │   ├── config.dart   # ← URL бэкенда тут
-    │   ├── state.dart
-    │   ├── api.dart
-    │   └── screens/{login,rooms,chat}.dart
+    │   ├── config.dart       # ← URL бэкенда тут (KIRCA_API_BASE через --dart-define)
+    │   ├── state.dart        # Auth / providers
+    │   ├── api.dart          # HTTP-клиент
+    │   ├── push.dart         # APNs регистрация device-токена
+    │   ├── crypto/           # E2E: identity, phrase (24 слова), room keys, ciphers
+    │   ├── screens/          # login, rooms, chat/, profile, invites, members, recovery_phrase
+    │   ├── services/         # room_invite (sealing room keys для приглашённых)
+    │   ├── storage/          # SQLite-кеш комнат/сообщений/приглашений
+    │   ├── ws/               # WS-клиенты (per-room, per-user)
+    │   ├── theme/            # glass app theme + фон
+    │   └── util/
+    ├── test/                 # юнит + golden tests
     └── pubspec.yaml
 ```
 
@@ -118,7 +138,7 @@ flutter run -d "iPhone 15"
 
 ## 3. Что внутри происходит
 
-**Регистрация/логин** → пароль хешится `scrypt` (формат `s1:<salt>:<hash>`), токен в `sessions` (D1) с `expires_at = now + 30 дней`, клиент кладёт в `flutter_secure_storage`. Старые SHA-256 хеши автоматически перехешируются в scrypt на следующем успешном логине.
+**Регистрация/логин** → пароль хешится `scrypt` (формат `s1:<salt>:<hash>`, N=2^14), токен в `sessions` (D1) с `expires_at = now + 30 дней`, клиент кладёт в `flutter_secure_storage`. Старые SHA-256 хеши автоматически перехешируются в scrypt на следующем успешном логине.
 
 **Открытие чата:**
 1. `GET /rooms/:id/history` — последние 50 сообщений из D1.
@@ -129,18 +149,28 @@ flutter run -d "iPhone 15"
 
 **Реконнект:** при разрыве WS клиент делает backoff `1 → 2 → 4 → 8 → 16 → 30c`. На реконнекте — `GET /rooms/:id/history?after=<last_seen_at>` подбирает пропущенное, потом WS открывается заново и переотправляются все pending.
 
-**Комнаты:** при создании указывается `is_public`. Публичные видны всем, в приватные пускают только участников (`memberships`). Создатель автоматически становится owner. В публичную можно вступить через `POST /rooms/:id/join`.
+**Комнаты:** при создании указывается `is_public` и `e2e`. Публичные видны всем (без E2E — иначе невозможно дать ключ незнакомому участнику). В приватные пускают только участников (`memberships`), приглашение — `POST /rooms/:id/invites` по username. Создатель — owner. В публичную можно вступить через `POST /rooms/:id/join`. Каждый участник может замьютить комнату — push не приходит, бэйдж непрочитанных серый.
+
+**E2E (приватные комнаты с флагом `e2e`):**
+- На первом запуске после регистрации клиент генерит X25519-identity, генерит 24-словную recovery-фразу (216 бит энтропии), деривирует из неё через PBKDF2 ключ восстановления и им AES-GCM-оборачивает приватник. На сервер летят: публичный ключ + sealed-приватник + соль. Открытая фраза сервер **никогда не видит** — UI показывает её один раз и принуждает записать.
+- Для каждой E2E-комнаты владелец генерит симметричный room key (AES-256), оборачивает его публичным ключом каждого участника (Curve25519-sealedbox) и публикует обёртки в `room_keys`. При новом приглашении приглашающий sealing'ует ключ для нового участника той же конструкцией.
+- Сообщения и аттачменты шифруются `RoomCipher` (AES-GCM с per-room key + per-message IV); сервер хранит и рассылает только шифротекст. История на сервере — opaque blobs.
+- На новом устройстве (или после logout) `IdentityStatus.needsRestore` → клиент просит ввести 24 слова → unwrap приватника → подтянуть room keys.
+
+**Push:** приходит при сообщении в комнате, если получатель оффлайн (по флагу из `USER_HUB` DO) и не замьютил комнату. APNs шлются напрямую из воркера через Web Crypto (ES256-токены) — без Firebase. Текст в payload — только для не-E2E комнат; для E2E летит «новое сообщение» без содержимого.
 
 ## 4. Эксплуатация
 
 - `GET /` — минималистичный лендинг со ссылками на доку и репо.
 - `GET /docs` — интерактивный API reference (Scalar UI, читает `/openapi.json`).
-- `GET /openapi.json` — OpenAPI 3.1 спека (источник правды; правится в `backend/src/openapi.ts`).
+- `GET /openapi.json` — OpenAPI 3.1 спека (источник правды; правится в `backend/src/lib/openapi.ts` + аннотациях на роутах).
 - `GET /healthz` — публичный health-check для UptimeRobot/cron. Возвращает `{ok:true, t}`.
-- **Logout:** `POST /logout` с Bearer-токеном — удаляет конкретно эту сессию. Клиент чистит локал.
+- **Logout:** `POST /logout` с Bearer-токеном — удаляет конкретно эту сессию. Клиент чистит локал, включая E2E-identity.
 - **Смена пароля:** `POST /change-password {old_password, new_password}` — обновляет хеш и **отзывает все остальные сессии** этого юзера.
+- **Удаление аккаунта:** `DELETE /me` — стирает пользователя, сессии, membership и опубликованный E2E-bundle. Чужие комнаты остаются.
 - **Rate limiting:** регистрация/логин лимитятся per-IP (`CF-Connecting-IP`), fixed-window 1 час. WS-отправка лимитится per-user в DO (10 сообщений / 5 сек).
 - **Push (APNs).** Бэкенд шлёт нативно через Web Crypto. Настройка ключей — см. `DEPLOY.md` → APNs.
+- **Аттачменты.** Картинки идут в R2 через `POST /uploads` (multipart); сервер возвращает blob-URL. В E2E-комнатах аттач шифруется клиентом перед заливкой, ключ растёт из room key.
 - **Staging:** отдельный воркер `kirca-api-staging` из ветки `dev`. Подробности в `DEPLOY.md`.
 
 ## 5. Что ещё стоит сделать (TODO)
@@ -149,7 +179,7 @@ flutter run -d "iPhone 15"
 - **JWT вместо сессий в D1.** Уберёт лишний select на каждом запросе (опционально — текущая нагрузка терпит).
 - **REST-fallback на отправку:** `POST /rooms/:id/messages`. Когда WS не поднимается — клиент шлёт через HTTP, чат остаётся живым; полезно ещё и для дебага.
 - **Observability.** Logpush в R2 или внешний сервис + структурированные `console.error` с request ID.
-- **E2E-шифрование.** Серьёзная переделка (X3DH/Sender Keys); отложено.
+- **Android-клиент.** Сейчас собирается только iOS-сборка через Codemagic.
 
 ## 6. Лимиты Cloudflare (актуально на момент написания)
 

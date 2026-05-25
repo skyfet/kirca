@@ -298,6 +298,7 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
           height: 56,
           glowColor: AppColors.accent,
           useOwnLayer: true,
+          shape: const LiquidRoundedSuperellipse(borderRadius: 18),
         ),
         body: SafeArea(
           child: Column(
@@ -454,7 +455,7 @@ class RoomTileContent extends StatelessWidget {
                     const Padding(
                       padding: EdgeInsets.only(left: 6),
                       child: Icon(Icons.notifications_off,
-                          size: 14, color: AppColors.onGlassDim),
+                          size: 13, color: AppColors.onGlassDim),
                     ),
                 ],
               ),

@@ -4,7 +4,12 @@
 
 ## Шипнуто
 
-P0 (доставка с `client_id` + `UNIQUE(room_id, client_id)`, реконнект с backoff `1→2→4→8→16→30c` и догон через `?after=`, scrypt-пароли с `s1:<salt>:<hash>` + автоапгрейд старых SHA-256, membership/приватные комнаты), P1 (нативный APNs через Web Crypto, rate limiting per-IP + per-user, пагинация `?before=`, typing-индикаторы) и P2 в части вложений (R2 + `/uploads`) и read-receipts (`markRead`, `last_read_at`). Бэкенд разложен по `routes/auth.ts`, `routes/rooms.ts`, `routes/messages.ts`, `routes/profile.ts`, `routes/ws.ts`, `routes/devices.ts`, `routes/uploads.ts`. Юнит-тесты на vitest-pool-workers — в `backend/test/unit/`. Staging-воркер `kirca-api-staging` поднимается из ветки `dev`.
+- **P0 — надёжная доставка.** `client_id` + `UNIQUE(room_id, client_id)` для дедупа, реконнект с backoff `1→2→4→8→16→30c`, догон пропущенного через `GET /rooms/:id/history?after=`. Пароли — scrypt `s1:<salt>:<hash>` (N=2^14) с автоапгрейдом старых SHA-256 на следующем успешном логине. Membership / приватные комнаты, owner-роль создателя, `POST /rooms/:id/join` для публичных.
+- **P1 — UX и защита.** Нативный APNs через Web Crypto (ES256 без Firebase), rate limiting per-IP (1ч fixed-window) и per-user в DO (10 msg / 5 сек), пагинация `?before=`, typing-индикаторы через WS, mute комнаты per-user.
+- **P2 — медиа и read-state.** Вложения через R2 (`POST /uploads`, blob-URL), read-receipts (`markRead`, `last_read_at`, `unread`-каунтер на тайле комнаты), edit/delete сообщений с историей правок.
+- **E2E.** Identity на клиенте (X25519, ключ обёрнут recovery-key из 24-словной фразы, derived через PBKDF2-SHA512), per-room AES-256 ключ, sealing room key для каждого участника через Curve25519 sealed box. Сервер хранит только шифротекст сообщений и аттачментов, фразу никогда не видит. На новом устройстве — `IdentityStatus.needsRestore` → ввод 24 слов в `RecoveryRestoreScreen` → unwrap приватника. Серверные роуты в `backend/src/routes/e2e.ts`, клиентская крипта в `flutter_app/lib/crypto/`.
+- **Архитектура.** Бэкенд разложен по `routes/auth.ts`, `routes/rooms.ts`, `routes/messages.ts`, `routes/profile.ts`, `routes/ws.ts`, `routes/devices.ts`, `routes/uploads.ts`, `routes/e2e.ts`. Юнит-тесты на vitest-pool-workers — в `backend/test/unit/` (auth, dedup, http, user_hub, e2e, e2e_ws, e2e_uploads). E2E поверх — Newman против локального wrangler в `test/kirca-api.postman_collection.json`. Staging-воркер `kirca-api-staging` поднимается из ветки `dev`.
+- **Клиент.** Glass-UI на `liquid_glass_widgets`, SQLite-кеш комнат / сообщений / приглашений, per-user WS для онлайн-статуса и счётчика непрочитанных, golden-тесты на тайлы комнат.
 
 ## Что осталось
 
@@ -19,8 +24,11 @@ P0 (доставка с `client_id` + `UNIQUE(room_id, client_id)`, реконн
 - Структурированный `console.error({reqId, route, code})` — Cloudflare сам тегирует request ID.
 - Tail Workers (`wrangler tail`) для лайв-дебага — не настройка, привычка.
 
-### E2E-шифрование
-Серьёзная переделка. Сервер становится «глупым» — хранит только зашифрованные блоки. Ключи у клиентов, обмен через X3DH (Signal Protocol), Sender Keys для групповых комнат. Делать, только если приватность — основное value-предложение; ломает edit/server-side search/uploaded thumbnails.
+### Android-клиент
+Сейчас Codemagic собирает только iOS. Android-сборка идёт `flutter build apk` локально, в CI её нет. Для публичного запуска на Android — добавить отдельный workflow + signing-конфиг + публикация APK в Releases.
+
+### Расширения E2E
+Базовый протокол достаточен для группового чата, но не даёт forward secrecy на уровне сообщения. Если важно — направление: Signal Sender Keys (per-sender ratchet) + периодическая ротация room key при изменении состава участников. Сейчас ротация ключа есть только при `key_version` bump (вручную); автоматический rotate-on-remove — отдельная задача.
 
 ## Архитектурные принципы
 
@@ -28,7 +36,7 @@ P0 (доставка с `client_id` + `UNIQUE(room_id, client_id)`, реконн
 
 ### Единственный источник истины
 - **D1** — долгое хранение. Что записано в D1 — то и есть правда.
-- **DO** — онлайн-состояние (кто подключён, чьи typing-индикаторы активны). При рестарте теряется без последствий.
+- **DO** — онлайн-состояние (кто подключён, чьи typing-индикаторы активны, online-флаг в `USER_HUB`). При рестарте теряется без последствий.
 - Никогда не дублировать. DO не «кеширует» сообщения — оно пишет в D1 и сразу рассылает, не помня после рассылки.
 
 ### Идемпотентность всего, что меняет состояние
@@ -63,20 +71,27 @@ app.route('/v1', v1);
 src/
   routes/
     auth.ts        # register/login/logout/change-password
-    rooms.ts       # CRUD комнат, join
+    rooms.ts       # CRUD комнат, join, invites, mute
     messages.ts    # история, edit/delete, read-receipts
-    profile.ts     # /me, avatar, delete-account
-    ws.ts          # WS upgrade → DO
+    profile.ts     # /me, avatar, delete-account, logout-all
+    ws.ts          # WS upgrade → Room DO
     devices.ts     # APNs token registration
     uploads.ts     # R2 presigned upload
-  room.ts          # Durable Object
-  lib/auth.ts      # scrypt, token verify
+    e2e.ts         # identity bundle, room keys (sealed)
+  room.ts          # Durable Object одной комнаты
+  user_hub.ts     # Durable Object одного пользователя (online + fan-out)
+  lib/
+    auth.ts        # scrypt, token verify
+    apns.ts        # ES256 JWT, request к api.push.apple.com
+    rate_limit.ts  # fixed-window
+    openapi.ts     # createApp/createRoute/jsonContent
+    schemas.ts     # zod-схемы запросов/ответов
+    middleware.ts  # auth guard, request id, CORS
 ```
 Когда роут вырастает за пару сотен строк — выноси в отдельный файл рядом с остальными.
 
 ### Тесты
-`vitest` + `@cloudflare/vitest-pool-workers` гоняет Worker в нативной среде с реальной D1 (in-memory). Покрытие в `backend/test/unit/`: auth-flow, dedup сообщений, `user_hub` (DO-presence), общие HTTP-эндпоинты. E2E поверх — Newman против локального wrangler в `test/kirca-api.postman_collection.json`. Любая новая фича шипится с минимальным тестом — это окупается с первого же рефакторинга.
+`vitest` + `@cloudflare/vitest-pool-workers` гоняет Worker в нативной среде с реальной D1 (in-memory). Покрытие в `backend/test/unit/`: auth-flow, dedup сообщений, `user_hub` (DO-presence), общие HTTP-эндпоинты, E2E identity + sealed room keys, E2E через WS, шифрованные аттачменты. E2E поверх — Newman против локального wrangler в `test/kirca-api.postman_collection.json`. Любая новая фича шипится с минимальным тестом — это окупается с первого же рефакторинга.
 
 ### Конфиг и env per stage
 Два воркера: `kirca-api` (prod) и `kirca-api-staging`. Конфигурируются через `[env.staging]` / `[env.production]` в `wrangler.toml`. CI деплоит staging на push в `dev`, prod — на push в `main` (см. `.github/workflows/backend-*.yml`).
-

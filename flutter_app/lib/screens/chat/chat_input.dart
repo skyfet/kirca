@@ -51,7 +51,8 @@ class ChatInputBar extends StatelessWidget {
               const SizedBox(width: 6),
               GlassIconButton(
                 size: 42,
-                icon: const Icon(Icons.send_rounded, color: AppColors.onGlass),
+                icon: const Icon(Icons.send, color: AppColors.onGlass),
+                glowColor: AppColors.accent,
                 onPressed: onSend,
               ),
             ],

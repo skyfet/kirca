@@ -611,10 +611,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           body: Column(
             children: [
               if (!_connected)
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 24, vertical: 4),
-                  child:
-                      GlassProgressIndicator.linear(height: 2, minWidth: 60),
+                Container(
+                  height: 2,
+                  margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        Color(0x00FFFFFF),
+                        Color(0x66FFFFFF),
+                        Color(0x00FFFFFF),
+                      ],
+                    ),
+                  ),
                 ),
               if (_loadingOlder)
                 const Padding(
@@ -701,8 +709,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           widget.roomName,
           style: const TextStyle(
             color: AppColors.onGlass,
-            fontWeight: FontWeight.w600,
-            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            fontSize: 18,
           ),
         ),
         actions: [
