@@ -116,10 +116,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _disposed = true;
     // Снимаем флаг активной комнаты через закешированный controller — на
     // момент dispose Element уже defunct, и ref.read бросил бы StateError,
-    // прерывая остаток cleanup.
-    if (_currentRoomCtrl.state == widget.roomId) {
-      _currentRoomCtrl.state = null;
-    }
+    // прерывая остаток cleanup. Саму запись откладываем в microtask:
+    // dispose часто вызывается из BuildOwner.finalizeTree, а Riverpod
+    // запрещает мутировать provider в фазе build.
+    final ctrl = _currentRoomCtrl;
+    final roomId = widget.roomId;
+    scheduleMicrotask(() {
+      if (ctrl.state == roomId) ctrl.state = null;
+    });
     WidgetsBinding.instance.removeObserver(this);
     _transport?.dispose();
     for (final t in _peerTyping.values) {
