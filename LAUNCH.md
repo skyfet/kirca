@@ -80,16 +80,14 @@ curl https://kirca-api.<acc>.workers.dev/healthz
 
 ## 2. Backend (staging) — отдельный воркер для рискованных правок
 
-### 2.1. Создать staging D1 **(один раз)**
+### 2.1. Staging D1 — уже создана
+
+В `wrangler.toml` под `[[env.staging.d1_databases]]` уже стоит реальный `database_id` (`b048752e-…`) для аккаунта `archen`. Если поднимаешь staging на своём аккаунте — пересоздай:
 
 ```bash
 cd backend
 npx wrangler d1 create kirca-api-staging
-```
-
-Подставь полученный `database_id` в `wrangler.toml` → секция `[[env.staging.d1_databases]]`. Сейчас там стоит **`REPLACE_ME`** — без замены staging-деплой упадёт.
-
-```bash
+# подставь полученный database_id в [[env.staging.d1_databases]] в wrangler.toml.
 npm run db:migrate:staging
 npm run deploy:staging
 ```
@@ -182,7 +180,7 @@ https://github.com/skyfet/kirca/releases/latest/download/kirca.ipa
 На чистом iPhone:
 1. Скачать `kirca.ipa` по ссылке выше.
 2. Установить через выбранный sideload-инструмент.
-3. Открыть, зарегаться, отправить сообщение в default room.
+3. Открыть, зарегаться (показывается 24-словная recovery-фраза — пройти экран до конца), создать публичную комнату через FAB `+`, отправить сообщение.
 
 ---
 
@@ -290,10 +288,10 @@ Cloudflare Dashboard → Billing → **Notifications** → включить aler
 
 ## 10. Что осталось «после запуска» (см. `ROADMAP.md`)
 
-- Typing indicators / read receipts.
-- Edit/delete messages.
-- Attachments (R2).
-- Infinite scroll вверх в UI (backend уже умеет `?before=`).
-- Web/Android клиенты.
+- JWT вместо `SELECT sessions` на каждый запрос (если профилирование покажет горлышко).
+- REST-fallback на отправку (`POST /rooms/:id/messages`) когда WS не поднимается.
+- Observability: Logpush в R2, структурированные `console.error` с request id.
+- Android-клиент (Codemagic сейчас собирает только iOS).
+- Forward secrecy в E2E (Sender Keys + автоматическая ротация room key при удалении участника).
 
-Это **не блокеры** для публичного запуска — это уже фичи v1.1+.
+Это **не блокеры** для публичного запуска — это уже фичи v1.1+. Typing-индикаторы, read-receipts, edit/delete, attachments в R2, infinite scroll и базовый E2E (включая 24-словную фразу восстановления) уже в коде.
