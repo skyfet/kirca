@@ -16,7 +16,6 @@ pubspec.lock
 linux/
 windows/
 macos/
-android/
 
 # Test artefacts (regenerated per run)
 integration_test/screenshots/

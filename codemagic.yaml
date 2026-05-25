@@ -1,7 +1,8 @@
 # Codemagic CI/CD - Flutter iOS - unsigned IPA - GitHub Releases
 #
 # What it does:
-# 1. Generates ios/android folders (not committed)
+# 1. Runs `flutter create` as a no-op safety net (ios/ and android/ are committed,
+#    flutter create only fills in missing files and never overwrites existing ones).
 # 2. Patches bundle id to ai.kirca.app
 # 3. Builds release IPA WITHOUT signing (--no-codesign)
 # 4. Packages it as IPA
