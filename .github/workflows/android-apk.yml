@@ -10,6 +10,9 @@ on:
       - '.github/workflows/android-apk.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -51,3 +54,17 @@ jobs:
           name: kirca-apk
           path: flutter_app/build/app/outputs/flutter-apk/kirca-*.apk
           if-no-files-found: error
+
+      # Publish to a GitHub Release so the APK gets a public download URL
+      # (artifacts above require a logged-in GitHub user to download).
+      - name: Publish APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="apk-${{ github.run_number }}"
+          gh release create "$TAG" \
+            --title "Android APK build ${{ github.run_number }}" \
+            --notes "Branch: ${{ github.ref_name }} @ ${{ github.sha }}\n\nDebug-signed APK for sideloading. Install with: adb install kirca-${{ github.run_number }}.apk" \
+            build/app/outputs/flutter-apk/kirca-${{ github.run_number }}.apk
+          echo "Download: https://github.com/${{ github.repository }}/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
