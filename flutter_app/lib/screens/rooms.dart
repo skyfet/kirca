@@ -14,7 +14,7 @@ import '../theme/app_background.dart';
 import '../theme/app_theme.dart';
 import '../ws/user_ws.dart';
 import 'chat.dart';
-import 'invites.dart';
+import 'friends.dart';
 import 'profile.dart';
 
 class RoomsScreen extends ConsumerStatefulWidget {
@@ -212,7 +212,9 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
     final auth = ref.watch(authProvider);
     final roomsAsync = ref.watch(roomsProvider);
     final invitesAsync = ref.watch(invitesProvider);
-    final invitesCount = invitesAsync.valueOrNull?.length ?? 0;
+    final friendReqAsync = ref.watch(friendRequestsProvider);
+    final pendingCount = (invitesAsync.valueOrNull?.length ?? 0) +
+        (friendReqAsync.valueOrNull?.length ?? 0);
     final connected = ref.watch(userWsConnectedProvider).valueOrNull ?? false;
 
     return GlassPage(
@@ -261,16 +263,18 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
           actions: [
             GlassIconButton(
               size: 36,
-              icon: invitesCount > 0
+              icon: pendingCount > 0
                   ? GlassBadge(
-                      count: invitesCount,
+                      count: pendingCount,
                       backgroundColor: AppColors.accent,
-                      child: const Icon(Icons.mail_outline, color: AppColors.onGlass),
+                      child: const Icon(Icons.people_alt_outlined,
+                          color: AppColors.onGlass),
                     )
-                  : const Icon(Icons.mail_outline, color: AppColors.onGlass),
+                  : const Icon(Icons.people_alt_outlined,
+                      color: AppColors.onGlass),
               onPressed: () => Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const InvitesScreen()),
+                MaterialPageRoute(builder: (_) => const FriendsScreen()),
               ),
             ),
             const SizedBox(width: 4),

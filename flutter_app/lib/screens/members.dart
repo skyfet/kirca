@@ -30,15 +30,24 @@ class MembersScreen extends ConsumerStatefulWidget {
 }
 
 class _MembersScreenState extends ConsumerState<MembersScreen> {
-  Future<void> _inviteByUsername() async {
-    final username = await _promptForUsername();
-    if (username == null) return;
+  Future<void> _openInviteSheet() async {
+    final result = await showModalBottomSheet<_InvitePick>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _InvitePickerSheet(roomId: widget.roomId),
+    );
+    if (result == null) return;
+    final username = result.username;
+    if (username == null || username.isEmpty) return;
+    await _inviteUsername(username);
+  }
 
+  Future<void> _inviteUsername(String username) async {
     final auth = ref.read(authProvider);
     if (auth == null) return;
     final api = Api(token: auth.token);
     final inviter = RoomInviteService(api);
-
     try {
       await inviter.inviteByUsername(
         roomId: widget.roomId,
@@ -58,88 +67,6 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
     } catch (e) {
       _toast('$e');
     }
-  }
-
-  /// Glass-styled prompt asking for a username. Returns the cleaned-up name
-  /// (no leading @) or null if the user cancelled / left it blank.
-  Future<String?> _promptForUsername() async {
-    final ctrl = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      barrierColor: Colors.black54,
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 320),
-          child: GlassCard(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text(
-                  'Пригласить по username',
-                  style: TextStyle(
-                    color: AppColors.onGlass,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 14),
-                GlassTextField(
-                  controller: ctrl,
-                  placeholder: 'username',
-                  prefixIcon: const Icon(Icons.alternate_email, size: 18),
-                  autofocus: true,
-                  height: 36,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(
-                      child: GlassButton.custom(
-                        onTap: () => Navigator.pop(ctx, false),
-                        height: 42,
-                        width: double.infinity,
-                        useOwnLayer: true,
-                        shape: LiquidRoundedSuperellipse(borderRadius: 12),
-                        child: const Center(
-                          child: Text('Отмена',
-                              style: TextStyle(color: AppColors.onGlass)),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: GlassButton.custom(
-                        onTap: () => Navigator.pop(ctx, true),
-                        glowColor: AppColors.accent,
-                        height: 42,
-                        width: double.infinity,
-                        useOwnLayer: true,
-                        shape: LiquidRoundedSuperellipse(borderRadius: 12),
-                        child: const Center(
-                          child: Text('Пригласить',
-                              style: TextStyle(
-                                  color: AppColors.onGlass,
-                                  fontWeight: FontWeight.w600)),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-    if (ok != true) return null;
-    final name = ctrl.text.trim().replaceAll(RegExp(r'^@+'), '');
-    return name.isEmpty ? null : name;
   }
 
   void _toast(String message) {
@@ -183,7 +110,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
                   size: 36,
                   icon: const Icon(Icons.person_add,
                       color: AppColors.onGlass),
-                  onPressed: _inviteByUsername,
+                  onPressed: _openInviteSheet,
                 ),
               const SizedBox(width: 8),
             ],
@@ -211,6 +138,160 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
                   ),
                 );
               },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InvitePick {
+  final String? username;
+  const _InvitePick(this.username);
+}
+
+/// Bottom sheet that lets the user invite a member to the room. Lists their
+/// friends (one-tap invite) and falls back to manual username entry for
+/// people who aren't in the friends list yet.
+class _InvitePickerSheet extends ConsumerStatefulWidget {
+  final String roomId;
+  const _InvitePickerSheet({required this.roomId});
+
+  @override
+  ConsumerState<_InvitePickerSheet> createState() => _InvitePickerSheetState();
+}
+
+class _InvitePickerSheetState extends ConsumerState<_InvitePickerSheet> {
+  final TextEditingController _ctrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _pickFriend(CachedFriend f) {
+    Navigator.pop(context, _InvitePick(f.username));
+  }
+
+  void _submitManual() {
+    final raw = _ctrl.text.trim().replaceAll(RegExp(r'^@+'), '');
+    if (raw.isEmpty) return;
+    Navigator.pop(context, _InvitePick(raw));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final friendsAsync = ref.watch(friendsProvider);
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        child: GlassPanel(
+          padding: const EdgeInsets.all(14),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.6,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Пригласить',
+                  style: TextStyle(
+                    color: AppColors.onGlass,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                GlassTextField(
+                  controller: _ctrl,
+                  placeholder: 'username (или выбери ниже)',
+                  prefixIcon: const Icon(Icons.alternate_email, size: 18),
+                  height: 36,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  onSubmitted: (_) => _submitManual(),
+                ),
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: GlassButton.custom(
+                    onTap: _submitManual,
+                    height: 32,
+                    width: 120,
+                    useOwnLayer: true,
+                    glowColor: AppColors.accent,
+                    shape: LiquidRoundedSuperellipse(borderRadius: 10),
+                    child: const Center(
+                      child: Text(
+                        'Отправить',
+                        style: TextStyle(
+                            color: AppColors.onGlass,
+                            fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Divider(color: Color(0x33FFFFFF), height: 1),
+                const SizedBox(height: 8),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Друзья',
+                    style: TextStyle(
+                        color: AppColors.onGlassMuted,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Flexible(
+                  child: friendsAsync.when(
+                    loading: () => const Center(
+                        child: GlassProgressIndicator.circular(size: 22)),
+                    error: (e, _) => Text('$e',
+                        style: const TextStyle(color: AppColors.danger)),
+                    data: (list) {
+                      if (list.isEmpty) {
+                        return const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 12),
+                          child: Text(
+                            'Список друзей пуст. Введи username вручную.',
+                            style: TextStyle(
+                                color: AppColors.onGlassDim, fontSize: 12),
+                          ),
+                        );
+                      }
+                      return ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: list.length,
+                        itemBuilder: (_, i) => GlassListTile.standalone(
+                          leading: CircleAvatar(
+                            radius: 16,
+                            backgroundColor:
+                                AppColors.blobIndigo.withOpacity(0.5),
+                            child: Text(
+                              list[i].username.isNotEmpty
+                                  ? list[i].username.characters.first.toUpperCase()
+                                  : '?',
+                              style: const TextStyle(
+                                  color: AppColors.onGlass,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                          title: Text('@${list[i].username}',
+                              style: const TextStyle(color: AppColors.onGlass)),
+                          onTap: () => _pickFriend(list[i]),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
           ),
         ),

@@ -139,6 +139,35 @@ final invitesProvider = StreamProvider<List<CachedInvite>>((ref) {
   return InvitesCache.watch();
 });
 
+final friendsProvider = StreamProvider<List<CachedFriend>>((ref) {
+  final auth = ref.watch(authProvider);
+  if (auth == null) {
+    return const Stream.empty();
+  }
+  Future<void>.microtask(() async {
+    try {
+      final list = await Api(token: auth.token).friends();
+      await FriendsCache.replaceAll(list.cast<Map<String, dynamic>>());
+    } catch (_) {}
+  });
+  return FriendsCache.watch();
+});
+
+final friendRequestsProvider =
+    StreamProvider<List<CachedFriendRequest>>((ref) {
+  final auth = ref.watch(authProvider);
+  if (auth == null) {
+    return const Stream.empty();
+  }
+  Future<void>.microtask(() async {
+    try {
+      final list = await Api(token: auth.token).friendRequests();
+      await FriendRequestsCache.replaceAll(list.cast<Map<String, dynamic>>());
+    } catch (_) {}
+  });
+  return FriendRequestsCache.watch();
+});
+
 final membersProvider = StreamProvider.autoDispose
     .family<List<CachedMember>, String>((ref, roomId) {
   final auth = ref.watch(authProvider);
