@@ -1,53 +1,30 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:web_socket_channel/status.dart' as ws_status;
 
 import '../api.dart';
 import '../config.dart';
-import '../crypto/e2e.dart';
-import '../crypto/room_keys.dart';
+import '../crypto/room_cipher.dart';
+import '../services/media_picker.dart';
 import '../state.dart';
 import '../storage/cache.dart';
 import '../storage/outbox.dart';
 import '../theme/app_background.dart';
 import '../theme/app_theme.dart';
+import '../util/uuid.dart';
+import 'chat/chat_input.dart';
+import 'chat/chat_row.dart';
+import 'chat/chat_transport.dart';
+import 'chat/message_bubble.dart';
 import 'members.dart';
 
-enum _SendStatus { sending, sent }
-
-class _Pending {
-  final String clientId;
-  final String text;
-  final int createdAt;
-  CachedAttachment? attachment;
-  _SendStatus status;
-  _Pending({
-    required this.clientId,
-    required this.text,
-    required this.createdAt,
-    this.attachment,
-    this.status = _SendStatus.sending,
-  });
-}
-
-String _uuidV4() {
-  final r = Random.secure();
-  final b = List<int>.generate(16, (_) => r.nextInt(256));
-  b[6] = (b[6] & 0x0f) | 0x40;
-  b[8] = (b[8] & 0x3f) | 0x80;
-  String h(int x) => x.toRadixString(16).padLeft(2, '0');
-  final s = b.map(h).join();
-  return '${s.substring(0, 8)}-${s.substring(8, 12)}-${s.substring(12, 16)}-${s.substring(16, 20)}-${s.substring(20)}';
-}
+const int _kHistoryPageSize = 50;
+const int _kCatchupLimit = 200;
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String roomId;
@@ -72,49 +49,59 @@ class ChatScreen extends ConsumerStatefulWidget {
 
 class _ChatScreenState extends ConsumerState<ChatScreen>
     with WidgetsBindingObserver {
-  final TextEditingController _ctrl = TextEditingController();
+  // ---- input + scroll ------------------------------------------------------
+  final TextEditingController _inputCtrl = TextEditingController();
   final ScrollController _scroll = ScrollController();
 
-  WebSocketChannel? _ws;
-  StreamSubscription? _sub;
+  // ---- transport (WS + send) ----------------------------------------------
+  ChatTransport? _transport;
   bool _connected = false;
+
+  // ---- lifecycle flag ------------------------------------------------------
   bool _disposed = false;
-  bool _muted = false;
 
-  /// pending (sending) messages, key = clientId.
-  final Map<String, _Pending> _pending = {};
+  // ---- local optimistic state ---------------------------------------------
+  /// pending sends keyed by clientId. Bubble shows immediately; row is
+  /// removed when the server echoes the message back with the same clientId.
+  final Map<String, PendingMessage> _pending = {};
 
+  // ---- read-state tracking ------------------------------------------------
   int _lastSeenAt = 0;
   int _lastReadSent = 0;
 
+  // ---- pagination ----------------------------------------------------------
   bool _loadingOlder = false;
   bool _hasMoreOlder = true;
 
-  // typing: peer_id -> reset timer.
+  // ---- typing indicators (peers we're seeing, not our own) ----------------
   final Map<String, Timer> _peerTyping = {};
-  DateTime _lastTypingSent = DateTime.fromMillisecondsSinceEpoch(0);
-  Timer? _typingStopTimer;
 
-  int _attempt = 0;
-  Timer? _reconnectTimer;
-
-  // Хранит id последнего сообщения, чтобы автоскроллить только при появлении
-  // нового, а не на каждое изменение (edit).
+  // ---- room state ----------------------------------------------------------
+  bool _muted = false;
   String? _lastTailId;
   bool _didInitialScroll = false;
+
+  // ---- ref-derived state, cached so dispose() / late callbacks don't touch
+  // ref after the element is defunct (flutter_riverpod's ref.read checks
+  // context.mounted and throws once the element is unmounted).
+  late final StateController<String?> _currentRoomCtrl;
+  String? _token;
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
 
   @override
   void initState() {
     super.initState();
     _muted = widget.muted;
+    _currentRoomCtrl = ref.read(currentRoomProvider.notifier);
+    _token = ref.read(authProvider)?.token;
+
     WidgetsBinding.instance.addObserver(this);
     _scroll.addListener(_onScroll);
-    // Сообщаем глобальному WS, что активная комната — эта, чтобы не бампить
-    // unread на свои же входящие сюда.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_disposed) {
-        ref.read(currentRoomProvider.notifier).state = widget.roomId;
-      }
+      if (!_disposed) _currentRoomCtrl.state = widget.roomId;
     });
     _hydrateAndConnect();
   }
@@ -124,186 +111,145 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (s == AppLifecycleState.resumed) _maybeMarkRead();
   }
 
+  @override
+  void dispose() {
+    _disposed = true;
+    // Снимаем флаг активной комнаты через закешированный controller — на
+    // момент dispose Element уже defunct, и ref.read бросил бы StateError,
+    // прерывая остаток cleanup.
+    if (_currentRoomCtrl.state == widget.roomId) {
+      _currentRoomCtrl.state = null;
+    }
+    WidgetsBinding.instance.removeObserver(this);
+    _transport?.dispose();
+    for (final t in _peerTyping.values) {
+      t.cancel();
+    }
+    _inputCtrl.dispose();
+    _scroll.removeListener(_onScroll);
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers — shared boilerplate
+  // ---------------------------------------------------------------------------
+
+  Api? get _api {
+    final t = _token;
+    return t == null ? null : Api(token: t);
+  }
+
+  /// Returns a RoomCipher for this room, or null when we're not in an E2E
+  /// room / not authed. Constructed on demand — RoomCipher is stateless.
+  RoomCipher? get _cipher {
+    if (!widget.e2e) return null;
+    final api = _api;
+    return api == null
+        ? null
+        : RoomCipher(
+            api: api,
+            roomId: widget.roomId,
+            fallbackVersion: widget.keyVersion,
+          );
+  }
+
+  void _setStateIfMounted([VoidCallback? fn]) {
+    if (!mounted) return;
+    fn == null ? setState(() {}) : setState(fn);
+  }
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Hydration + initial connect
+  // ---------------------------------------------------------------------------
+
   Future<void> _hydrateAndConnect() async {
-    // 1. Загрузить outbox → pending.
+    await _restorePendingFromOutbox();
+    await _warmRoomKeyCache();
+    _startTransport();
+    unawaited(_runCatchupAndResend());
+  }
+
+  Future<void> _restorePendingFromOutbox() async {
     try {
       final saved = await Outbox.byRoom(widget.roomId);
       for (final s in saved) {
-        _pending[s.clientId] = _Pending(
+        _pending[s.clientId] = PendingMessage(
           clientId: s.clientId,
           text: s.text,
           createdAt: s.createdAt,
         );
       }
-      if (saved.isNotEmpty && mounted) setState(() {});
-    } catch (_) {}
-
-    // 2. For E2E rooms: warm the room-key cache before we start receiving
-    // messages so they're decryptable on arrival.
-    if (widget.e2e) {
-      final auth = ref.read(authProvider);
-      if (auth != null) {
-        try {
-          await RoomKeyCache.latest(Api(token: auth.token), widget.roomId);
-        } catch (_) { /* offline → we'll retry on first decrypt */ }
-      }
-    }
-
-    // 3. Стартовать WS. История подтянется через `messagesProvider`.
-    _connect();
+      if (saved.isNotEmpty) _setStateIfMounted();
+    } catch (_) {/* кэш мог быть пустым */}
   }
 
-  Future<void> _decryptIfNeeded(CachedMessage m) async {
-    if (!widget.e2e || !m.isE2e || m.text.isNotEmpty || m.deletedAt != null) {
-      return;
-    }
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-    final v = m.keyVersion ?? widget.keyVersion;
-    final key = await RoomKeyCache.get(Api(token: auth.token), widget.roomId, v);
-    if (key == null) return;
+  Future<void> _warmRoomKeyCache() async {
+    final cipher = _cipher;
+    if (cipher == null) return;
     try {
-      final plaintext = await E2E.decryptMessage(
-        roomKey: key,
-        cipher: MessageCipher(
-          iv: Uint8List.fromList(base64Decode(m.iv!)),
-          ciphertext: Uint8List.fromList(base64Decode(m.ciphertext!)),
-        ),
-      );
-      await MessagesCache.setDecryptedText(widget.roomId, m.id, plaintext);
-    } catch (_) {
-      // Wrong key version, corrupted blob, or we don't have a key yet — leave
-      // text empty so the UI renders a "🔒 cannot decrypt" placeholder.
-    }
+      await cipher.currentKey();
+    } catch (_) {/* офлайн — повторим при первой расшифровке */}
   }
 
-  void _onScroll() {
-    if (!_scroll.position.hasContentDimensions) return;
-    final distanceFromOldest =
-        _scroll.position.maxScrollExtent - _scroll.position.pixels;
-    if (distanceFromOldest <= 80 && !_loadingOlder && _hasMoreOlder) {
-      _loadOlder();
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // Transport bootstrap
+  // ---------------------------------------------------------------------------
 
-  Future<void> _loadOlder() async {
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-    final cached = await MessagesCache.snapshot(widget.roomId);
-    if (cached.isEmpty) {
-      _hasMoreOlder = false;
-      return;
-    }
-    _loadingOlder = true;
-    if (mounted) setState(() {});
-    try {
-      final before = cached.first.createdAt;
-      final h = await Api(token: auth.token)
-          .history(widget.roomId, before: before, limit: 50);
-      if (h.isEmpty) {
-        _hasMoreOlder = false;
-        return;
-      }
-      await MessagesCache.upsertAll(widget.roomId, h.cast<Map<String, dynamic>>());
-      if (h.length < 50) _hasMoreOlder = false;
-      // reverse: true ListView — newer items pinned to offset 0 (bottom).
-      // Adding older items extends maxScrollExtent upward; the user's
-      // current pixels value still references the same visible content,
-      // so no jumpTo correction is needed.
-    } catch (_) {
-      // тихо — в следующий раз
-    } finally {
-      _loadingOlder = false;
-      if (mounted) setState(() {});
-    }
-  }
-
-  void _connect() {
+  void _startTransport() {
     if (_disposed) return;
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-
-    final uri = Uri.parse(
-        '${Config.wsBase}/rooms/${widget.roomId}/ws?token=${auth.token}');
-    final ws = WebSocketChannel.connect(uri);
-    _ws = ws;
-
-    _sub = ws.stream.listen(
-      (raw) {
-        _attempt = 0;
-        if (!_connected && mounted) setState(() => _connected = true);
-        try {
-          final m = jsonDecode(raw as String) as Map<String, dynamic>;
-          switch (m['type']) {
-            case 'msg':
-              _onWsMessage(m);
-              break;
-            case 'edit':
-              _onWsEdit(m);
-              break;
-            case 'delete':
-              _onWsDelete(m);
-              break;
-            case 'typing':
-              _onWsTyping(m);
-              break;
-            case 'error':
-              if (m['code']?.toString() == 'rate_limited' && mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Слишком много сообщений, подожди немного')),
-                );
-              }
-              break;
-          }
-        } catch (_) {}
-      },
-      onDone: _onDisconnect,
-      onError: (_) => _onDisconnect(),
-      cancelOnError: true,
-    );
-
-    // Catchup пропущенного через REST + переотправка pending.
-    Future<void>.microtask(() async {
-      if (_lastSeenAt > 0) {
-        try {
-          final h = await Api(token: auth.token)
-              .history(widget.roomId, after: _lastSeenAt, limit: 200);
-          if (h.isNotEmpty) {
-            await MessagesCache.upsertAll(
-                widget.roomId, h.cast<Map<String, dynamic>>());
-          }
-        } catch (_) {}
-      }
-      _resendPending();
-      if (!_connected && mounted) setState(() => _connected = true);
-    });
+    final token = _token;
+    if (token == null) return;
+    _transport = ChatTransport(
+      roomId: widget.roomId,
+      token: token,
+      wsBase: Config.wsBase,
+      cipher: _cipher,
+      onMessage: _onWsMessage,
+      onEdit: _onWsEdit,
+      onDelete: _onWsDelete,
+      onTyping: _onWsTyping,
+      onConnectedChanged: (c) => _setStateIfMounted(() => _connected = c),
+      onUnauthorized: () => ref.read(authProvider.notifier).forceLogout(),
+      onRateLimited: () => _toast('Слишком много сообщений, подожди немного'),
+      onMissingRoomKey: () =>
+          _toast('Не удалось получить ключ комнаты — отправка отложена'),
+    )..start();
   }
 
-  void _onDisconnect() {
-    if (_disposed) return;
-    final code = _ws?.closeCode;
-    _sub?.cancel();
-    _sub = null;
-    try { _ws?.sink.close(); } catch (_) {}
-    _ws = null;
-    if (mounted) setState(() => _connected = false);
-
-    if (code == 1008) {
-      ref.read(authProvider.notifier).forceLogout();
-      return;
+  /// Backfill anything we missed while offline, then re-flush pending sends.
+  /// Catchup is REST-driven so it doesn't need to wait for WS handshake.
+  Future<void> _runCatchupAndResend() async {
+    final api = _api;
+    if (api != null && _lastSeenAt > 0) {
+      try {
+        final h = await api.history(
+          widget.roomId,
+          after: _lastSeenAt,
+          limit: _kCatchupLimit,
+        );
+        if (h.isNotEmpty) {
+          await MessagesCache.upsertAll(
+              widget.roomId, h.cast<Map<String, dynamic>>());
+        }
+      } catch (_) {}
     }
-    const delays = [1, 2, 4, 8, 16, 30];
-    final secs = delays[min(_attempt, delays.length - 1)];
-    _attempt++;
-    _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(Duration(seconds: secs), _connect);
+    _resendPending();
   }
+
+  // ---------------------------------------------------------------------------
+  // WS event handlers
+  // ---------------------------------------------------------------------------
 
   void _onWsMessage(Map<String, dynamic> m) {
     final clientId = m['client_id']?.toString();
     final createdAt = (m['created_at'] as num?)?.toInt() ?? 0;
-    if (clientId != null && _pending.containsKey(clientId)) {
-      _pending.remove(clientId);
+    if (clientId != null && _pending.remove(clientId) != null) {
       Outbox.remove(clientId);
     }
     // For E2E rooms we want to flip the message to its decrypted form before
@@ -311,23 +257,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     Future<void>.microtask(() async {
       await MessagesCache.upsert(widget.roomId, m);
       if (widget.e2e && m['ciphertext'] != null) {
-        final shaped = CachedMessage.fromRow({
-          'id': m['id'],
-          'room_id': widget.roomId,
-          'client_id': m['client_id'],
-          'user_id': m['user_id'] ?? '',
-          'username': m['username'] ?? '',
-          'text': '',
-          'created_at': createdAt,
-          'ciphertext': m['ciphertext'],
-          'iv': m['iv'],
-          'key_version': m['key_version'],
-        });
-        await _decryptIfNeeded(shaped);
+        await _decryptIfNeeded(
+          CachedMessage.fromRow({
+            'id': m['id'],
+            'room_id': widget.roomId,
+            'client_id': m['client_id'],
+            'user_id': m['user_id'] ?? '',
+            'username': m['username'] ?? '',
+            'text': '',
+            'created_at': createdAt,
+            'ciphertext': m['ciphertext'],
+            'iv': m['iv'],
+            'key_version': m['key_version'],
+          }),
+        );
       }
     });
     _lastSeenAt = max(_lastSeenAt, createdAt);
-    if (mounted) setState(() {});
+    _setStateIfMounted();
     _maybeMarkRead();
   }
 
@@ -356,30 +303,270 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final uid = m['user_id']?.toString();
     final me = ref.read(authProvider)?.userId;
     if (uid == null || uid == me) return;
-    final isTyping = m['is_typing'] != false;
     _peerTyping[uid]?.cancel();
-    if (isTyping) {
+    if (m['is_typing'] != false) {
       _peerTyping[uid] = Timer(const Duration(seconds: 4), () {
         _peerTyping.remove(uid);
-        if (mounted) setState(() {});
+        _setStateIfMounted();
       });
     } else {
       _peerTyping.remove(uid);
     }
-    if (mounted) setState(() {});
+    _setStateIfMounted();
   }
 
+  // ---------------------------------------------------------------------------
+  // Send pipeline
+  // ---------------------------------------------------------------------------
+
+  void _send() {
+    final t = _inputCtrl.text.trim();
+    if (t.isEmpty) return;
+    _sendCore(text: t);
+  }
+
+  void _sendCore({
+    String text = '',
+    String? attachmentId,
+    CachedAttachment? attPreview,
+  }) {
+    final clientId = uuidV4();
+    final createdAt = DateTime.now().millisecondsSinceEpoch;
+    _pending[clientId] = PendingMessage(
+      clientId: clientId,
+      text: text,
+      createdAt: createdAt,
+      attachment: attPreview,
+    );
+    if (text.isNotEmpty) _inputCtrl.clear();
+    setState(() {});
+    _scrollToEnd();
+    Outbox.add(
+      clientId: clientId,
+      roomId: widget.roomId,
+      text: text,
+      createdAt: createdAt,
+    );
+    _transport?.send(
+        clientId: clientId, text: text, attachmentId: attachmentId);
+  }
+
+  void _resendPending() {
+    final t = _transport;
+    if (t == null) return;
+    for (final p in _pending.values) {
+      t.send(
+          clientId: p.clientId, text: p.text, attachmentId: p.attachment?.id);
+    }
+  }
+
+  void _onTextChanged(String _) => _transport?.notifyTyping();
+
+  // ---------------------------------------------------------------------------
+  // Image picking + upload
+  // ---------------------------------------------------------------------------
+
+  Future<void> _pickAndSendImage() async {
+    final api = _api;
+    if (api == null) return;
+    final picker = MediaPicker(api);
+    try {
+      final media = widget.e2e
+          ? await picker.pickAndUploadEncrypted(cipher: _cipher!)
+          : await picker.pickAndUploadPlain();
+      if (media == null) return;
+      _sendCore(attachmentId: media.attachmentId, attPreview: media.preview);
+    } on UnsupportedMediaFormat {
+      _toast('Неподдерживаемый формат');
+    } on RoomKeyUnavailable {
+      _toast('Нет ключа комнаты — загрузка невозможна');
+    } catch (e) {
+      _toast('$e');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Edit / delete
+  // ---------------------------------------------------------------------------
+
+  Future<void> _editMsg(CachedMessage m) async {
+    final api = _api;
+    if (api == null) return;
+    final newText = await _promptEdit(m.text);
+    if (newText == null || newText == m.text) return;
+    try {
+      if (widget.e2e) {
+        final enc = await _cipher!.encryptMessage(newText);
+        await api.editMessage(
+          widget.roomId,
+          m.id,
+          '',
+          ciphertext: enc.cipher.ctB64,
+          iv: enc.cipher.ivB64,
+          keyVersion: enc.keyVersion,
+        );
+      } else {
+        await api.editMessage(widget.roomId, m.id, newText);
+      }
+      // Keep local plaintext fresh so the bubble updates immediately.
+      await MessagesCache.applyEdit(
+        widget.roomId,
+        m.id,
+        newText,
+        DateTime.now().millisecondsSinceEpoch,
+      );
+    } on RoomKeyUnavailable {
+      _toast('нет ключа комнаты');
+    } catch (e) {
+      _toast('$e');
+    }
+  }
+
+  Future<String?> _promptEdit(String initial) async {
+    final ctrl = TextEditingController(text: initial);
+    final ok = await GlassDialog.show<bool>(
+      context: context,
+      title: 'Редактировать',
+      content: GlassTextField(
+        controller: ctrl,
+        autofocus: true,
+        maxLines: 4,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      ),
+      actions: [
+        GlassDialogAction(
+            label: 'Отмена',
+            onPressed: () => Navigator.pop(context, false)),
+        GlassDialogAction(
+            label: 'Сохранить',
+            isPrimary: true,
+            onPressed: () => Navigator.pop(context, true)),
+      ],
+    );
+    if (ok != true) return null;
+    final text = ctrl.text.trim();
+    return text.isEmpty ? null : text;
+  }
+
+  Future<void> _deleteMsg(CachedMessage m) async {
+    final api = _api;
+    if (api == null) return;
+    final ok = await GlassDialog.show<bool>(
+      context: context,
+      title: 'Удалить сообщение?',
+      actions: [
+        GlassDialogAction(
+            label: 'Отмена',
+            onPressed: () => Navigator.pop(context, false)),
+        GlassDialogAction(
+            label: 'Удалить',
+            isDestructive: true,
+            onPressed: () => Navigator.pop(context, true)),
+      ],
+    );
+    if (ok != true) return;
+    try {
+      await api.deleteMessage(widget.roomId, m.id);
+      await MessagesCache.applyDelete(
+          widget.roomId, m.id, DateTime.now().millisecondsSinceEpoch);
+    } catch (e) {
+      _toast('$e');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Read state + mute
+  // ---------------------------------------------------------------------------
+
   Future<void> _maybeMarkRead() async {
+    if (_disposed) return;
     if (_lastSeenAt <= _lastReadSent) return;
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
+    final api = _api;
+    if (api == null) return;
     final ts = _lastSeenAt;
     _lastReadSent = ts;
     try {
-      await Api(token: auth.token).markRead(widget.roomId, ts);
+      await api.markRead(widget.roomId, ts);
       await RoomsCache.setUnread(widget.roomId, 0);
     } catch (_) {}
   }
+
+  Future<void> _toggleMute() async {
+    final api = _api;
+    if (api == null) return;
+    final next = !_muted;
+    setState(() => _muted = next);
+    await RoomsCache.setMuted(widget.roomId, next);
+    try {
+      await api.setMuted(widget.roomId, next);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _muted = !next);
+      await RoomsCache.setMuted(widget.roomId, !next);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // History pagination + decrypt
+  // ---------------------------------------------------------------------------
+
+  void _onScroll() {
+    if (!_scroll.position.hasContentDimensions) return;
+    final distanceFromOldest =
+        _scroll.position.maxScrollExtent - _scroll.position.pixels;
+    if (distanceFromOldest <= 80 && !_loadingOlder && _hasMoreOlder) {
+      _loadOlder();
+    }
+  }
+
+  Future<void> _loadOlder() async {
+    final api = _api;
+    if (api == null) return;
+    final cached = await MessagesCache.snapshot(widget.roomId);
+    if (cached.isEmpty) {
+      _hasMoreOlder = false;
+      return;
+    }
+    _loadingOlder = true;
+    _setStateIfMounted();
+    try {
+      final h = await api.history(widget.roomId,
+          before: cached.first.createdAt, limit: _kHistoryPageSize);
+      if (h.isEmpty) {
+        _hasMoreOlder = false;
+        return;
+      }
+      await MessagesCache.upsertAll(
+          widget.roomId, h.cast<Map<String, dynamic>>());
+      if (h.length < _kHistoryPageSize) _hasMoreOlder = false;
+      // reverse: true ListView — newer items pinned to offset 0 (bottom);
+      // prepending older rows extends maxScrollExtent upward, so the user's
+      // current pixels value still anchors the same visible content.
+    } catch (_) {/* тихо — в следующий раз */} finally {
+      _loadingOlder = false;
+      _setStateIfMounted();
+    }
+  }
+
+  Future<void> _decryptIfNeeded(CachedMessage m) async {
+    if (_disposed) return;
+    if (!widget.e2e || !m.isE2e || m.text.isNotEmpty || m.deletedAt != null) {
+      return;
+    }
+    final cipher = _cipher;
+    if (cipher == null) return;
+    final plaintext = await cipher.decryptMessage(
+      keyVersion: m.keyVersion ?? widget.keyVersion,
+      iv: Uint8List.fromList(base64Decode(m.iv!)),
+      ciphertext: Uint8List.fromList(base64Decode(m.ciphertext!)),
+    );
+    if (plaintext == null) return; // wrong key version / not yet available
+    await MessagesCache.setDecryptedText(widget.roomId, m.id, plaintext);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scroll helpers
+  // ---------------------------------------------------------------------------
 
   void _scrollToEnd({bool animate = true}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -394,336 +581,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
   }
 
-  void _onTextChanged(String _) {
-    final ws = _ws;
-    if (ws == null) return;
-    final now = DateTime.now();
-    if (now.difference(_lastTypingSent) > const Duration(seconds: 2)) {
-      _lastTypingSent = now;
-      try {
-        ws.sink.add(jsonEncode({'type': 'typing', 'is_typing': true}));
-      } catch (_) {}
-    }
-    _typingStopTimer?.cancel();
-    _typingStopTimer = Timer(const Duration(seconds: 3), () {
-      try {
-        _ws?.sink.add(jsonEncode({'type': 'typing', 'is_typing': false}));
-      } catch (_) {}
-    });
-  }
-
-  void _send() {
-    final t = _ctrl.text.trim();
-    if (t.isEmpty) return;
-    _sendCore(text: t);
-  }
-
-  void _sendCore({String text = '', String? attachmentId, CachedAttachment? attPreview}) {
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-    final clientId = _uuidV4();
-    final createdAt = DateTime.now().millisecondsSinceEpoch;
-    _pending[clientId] = _Pending(
-      clientId: clientId,
-      text: text,
-      createdAt: createdAt,
-      attachment: attPreview,
-    );
-    if (text.isNotEmpty) _ctrl.clear();
-    setState(() {});
-    _scrollToEnd();
-    Outbox.add(
-      clientId: clientId,
-      roomId: widget.roomId,
-      text: text,
-      createdAt: createdAt,
-    );
-    if (widget.e2e) {
-      // Encrypt text asynchronously, then transmit. Pending bubble already
-      // shows the plaintext locally.
-      unawaited(_wsSendEncrypted(clientId, text, attachmentId));
-    } else {
-      _wsSend(clientId, text, attachmentId);
-    }
-  }
-
-  void _wsSend(String clientId, String text, String? attachmentId) {
-    final ws = _ws;
-    if (ws == null) return;
-    try {
-      ws.sink.add(jsonEncode({
-        'type': 'msg',
-        'client_id': clientId,
-        if (text.isNotEmpty) 'text': text,
-        if (attachmentId != null) 'attachment_id': attachmentId,
-      }));
-    } catch (_) {}
-  }
-
-  Future<void> _wsSendEncrypted(
-    String clientId,
-    String text,
-    String? attachmentId,
-  ) async {
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-    final api = Api(token: auth.token);
-    final key = await RoomKeyCache.latest(api, widget.roomId);
-    if (key == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Не удалось получить ключ комнаты — отправка отложена'),
-        ));
-      }
-      return;
-    }
-    final v = RoomKeyCache.latestVersion(widget.roomId) ?? widget.keyVersion;
-    final ws = _ws;
-    if (ws == null) return;
-    try {
-      if (text.isNotEmpty) {
-        final cipher = await E2E.encryptMessage(roomKey: key, plaintext: text);
-        ws.sink.add(jsonEncode({
-          'type': 'msg',
-          'client_id': clientId,
-          'ciphertext': cipher.ctB64,
-          'iv': cipher.ivB64,
-          'key_version': v,
-          if (attachmentId != null) 'attachment_id': attachmentId,
-        }));
-      } else if (attachmentId != null) {
-        // Attachment-only E2E message still needs ciphertext on the wire — we
-        // wrap a zero-length payload so the DO accepts the row.
-        final cipher = await E2E.encryptMessage(roomKey: key, plaintext: '');
-        ws.sink.add(jsonEncode({
-          'type': 'msg',
-          'client_id': clientId,
-          'ciphertext': cipher.ctB64,
-          'iv': cipher.ivB64,
-          'key_version': v,
-          'attachment_id': attachmentId,
-        }));
-      }
-    } catch (_) {}
-  }
-
-  void _resendPending() {
-    for (final p in _pending.values) {
-      if (widget.e2e) {
-        unawaited(_wsSendEncrypted(p.clientId, p.text, p.attachment?.id));
-      } else {
-        _wsSend(p.clientId, p.text, p.attachment?.id);
-      }
-    }
-  }
-
-  Future<void> _pickAndSendImage() async {
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-    final picker = ImagePicker();
-    final picked = await picker.pickImage(
-        source: ImageSource.gallery, maxWidth: 2048, maxHeight: 2048);
-    if (picked == null) return;
-    final bytes = await File(picked.path).readAsBytes();
-    final mime = _mimeFromPath(picked.path);
-    if (mime == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Неподдерживаемый формат')),
-        );
-      }
-      return;
-    }
-    try {
-      final api = Api(token: auth.token);
-      if (widget.e2e) {
-        final roomKey = await RoomKeyCache.latest(api, widget.roomId);
-        if (roomKey == null) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('Нет ключа комнаты — загрузка невозможна'),
-            ));
-          }
-          return;
-        }
-        final cipher = await E2E.encryptAttachment(
-          roomKey: roomKey,
-          bytes: Uint8List.fromList(bytes),
-        );
-        final v = RoomKeyCache.latestVersion(widget.roomId) ?? widget.keyVersion;
-        final reserved = await api.reserveUpload(
-          mime: 'application/octet-stream',
-          size: cipher.ciphertext.length,
-          e2e: true,
-          roomId: widget.roomId,
-          iv: base64Encode(cipher.iv),
-          wrappedKey: base64Encode(cipher.wrappedKey),
-          wrappedKeyIv: base64Encode(cipher.wrappedKeyIv),
-          keyVersion: v,
-        );
-        final uploadUrl = reserved['upload_url']?.toString();
-        final attachmentId = reserved['id']?.toString();
-        if (uploadUrl == null || attachmentId == null) return;
-        await api.uploadBytes(uploadUrl, cipher.ciphertext, 'application/octet-stream');
-        _sendCore(
-          attachmentId: attachmentId,
-          attPreview: CachedAttachment(
-            id: attachmentId,
-            url: reserved['public_url']?.toString(),
-            mime: mime,
-            wrappedKey: base64Encode(cipher.wrappedKey),
-            wrappedKeyIv: base64Encode(cipher.wrappedKeyIv),
-            iv: base64Encode(cipher.iv),
-            keyVersion: v,
-          ),
-        );
-      } else {
-        final reserved = await api.reserveUpload(mime: mime, size: bytes.length);
-        final uploadUrl = reserved['upload_url']?.toString();
-        final attachmentId = reserved['id']?.toString();
-        final publicUrl = reserved['public_url']?.toString();
-        if (uploadUrl == null || attachmentId == null) return;
-        await api.uploadBytes(uploadUrl, bytes, mime);
-        _sendCore(
-          attachmentId: attachmentId,
-          attPreview: CachedAttachment(id: attachmentId, url: publicUrl, mime: mime),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
-      }
-    }
-  }
-
-  String? _mimeFromPath(String path) {
-    final p = path.toLowerCase();
-    if (p.endsWith('.jpg') || p.endsWith('.jpeg')) return 'image/jpeg';
-    if (p.endsWith('.png')) return 'image/png';
-    if (p.endsWith('.webp')) return 'image/webp';
-    if (p.endsWith('.gif')) return 'image/gif';
-    if (p.endsWith('.heic')) return 'image/heic';
-    return null;
-  }
-
-  Future<void> _editMsg(CachedMessage m) async {
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-    final ctrl = TextEditingController(text: m.text);
-    final ok = await GlassDialog.show<bool>(
-      context: context,
-      title: 'Редактировать',
-      content: GlassTextField(
-        controller: ctrl,
-        autofocus: true,
-        maxLines: 4,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      ),
-      actions: [
-        GlassDialogAction(label: 'Отмена', onPressed: () => Navigator.pop(context, false)),
-        GlassDialogAction(label: 'Сохранить', isPrimary: true, onPressed: () => Navigator.pop(context, true)),
-      ],
-    );
-    if (ok != true) return;
-    final text = ctrl.text.trim();
-    if (text.isEmpty || text == m.text) return;
-    try {
-      final api = Api(token: auth.token);
-      if (widget.e2e) {
-        final key = await RoomKeyCache.latest(api, widget.roomId);
-        if (key == null) throw Exception('нет ключа комнаты');
-        final cipher = await E2E.encryptMessage(roomKey: key, plaintext: text);
-        final v = RoomKeyCache.latestVersion(widget.roomId) ?? widget.keyVersion;
-        await api.editMessage(
-          widget.roomId,
-          m.id,
-          '',
-          ciphertext: cipher.ctB64,
-          iv: cipher.ivB64,
-          keyVersion: v,
-        );
-        // Keep local plaintext fresh so the bubble updates immediately.
-        await MessagesCache.applyEdit(
-          widget.roomId,
-          m.id,
-          text,
-          DateTime.now().millisecondsSinceEpoch,
-        );
-      } else {
-        await api.editMessage(widget.roomId, m.id, text);
-        await MessagesCache.applyEdit(
-          widget.roomId,
-          m.id,
-          text,
-          DateTime.now().millisecondsSinceEpoch,
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
-      }
-    }
-  }
-
-  Future<void> _deleteMsg(CachedMessage m) async {
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-    final ok = await GlassDialog.show<bool>(
-      context: context,
-      title: 'Удалить сообщение?',
-      actions: [
-        GlassDialogAction(label: 'Отмена', onPressed: () => Navigator.pop(context, false)),
-        GlassDialogAction(label: 'Удалить', isDestructive: true, onPressed: () => Navigator.pop(context, true)),
-      ],
-    );
-    if (ok != true) return;
-    try {
-      await Api(token: auth.token).deleteMessage(widget.roomId, m.id);
-      await MessagesCache.applyDelete(widget.roomId, m.id, DateTime.now().millisecondsSinceEpoch);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
-      }
-    }
-  }
-
-  Future<void> _toggleMute() async {
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-    final next = !_muted;
-    setState(() => _muted = next);
-    await RoomsCache.setMuted(widget.roomId, next);
-    try {
-      await Api(token: auth.token).setMuted(widget.roomId, next);
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _muted = !next);
-      await RoomsCache.setMuted(widget.roomId, !next);
-    }
-  }
-
-  @override
-  void dispose() {
-    _disposed = true;
-    // Снимаем флаг активной комнаты — теперь фоновые сообщения снова
-    // увеличивают unread.
-    final notifier = ref.read(currentRoomProvider.notifier);
-    if (notifier.state == widget.roomId) {
-      notifier.state = null;
-    }
-    WidgetsBinding.instance.removeObserver(this);
-    _reconnectTimer?.cancel();
-    _typingStopTimer?.cancel();
-    for (final t in _peerTyping.values) {
-      t.cancel();
-    }
-    _sub?.cancel();
-    try { _ws?.sink.close(ws_status.normalClosure); } catch (_) {}
-    _ctrl.dispose();
-    _scroll.removeListener(_onScroll);
-    _scroll.dispose();
-    super.dispose();
-  }
+  // ---------------------------------------------------------------------------
+  // Build
+  // ---------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -732,11 +592,58 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final cachedAsync = ref.watch(messagesProvider(widget.roomId));
     final cached = cachedAsync.valueOrNull ?? const <CachedMessage>[];
 
-    // Реагируем на появление нового хвостового сообщения вне build-цикла:
-    // обновить _lastSeenAt, скролл вниз, mark-read.
+    _wireMessageListener();
+    _maybeInitialScroll(cached);
+
+    final rows = _buildRows(cached, me, myUsername);
+
+    return GlassPage(
+      background: const AppBackground(),
+      statusBarStyle: GlassStatusBarStyle.light,
+      edgeToEdge: true,
+      child: AdaptiveLiquidGlassLayer(
+        clipBehavior: Clip.none,
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          extendBodyBehindAppBar: true,
+          extendBody: true,
+          appBar: _appBar(),
+          body: Column(
+            children: [
+              if (!_connected)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+                  child:
+                      GlassProgressIndicator.linear(height: 2, minWidth: 60),
+                ),
+              if (_loadingOlder)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 6),
+                  child: GlassProgressIndicator.circular(size: 18),
+                ),
+              Expanded(child: _messageList(rows, me)),
+              TypingChip(peerCount: _peerTyping.length),
+              ChatInputBar(
+                controller: _inputCtrl,
+                onChanged: _onTextChanged,
+                onSend: _send,
+                onPickImage: _pickAndSendImage,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Subscribes (idempotently per-build) to the room's message stream so we
+  /// can react to new tails outside of build() — autoscroll, mark-read, and
+  /// lazy decryption of ciphertext-only rows surfaced by REST history.
+  void _wireMessageListener() {
     ref.listen<AsyncValue<List<CachedMessage>>>(
       messagesProvider(widget.roomId),
       (prev, next) {
+        if (_disposed) return;
         final list = next.valueOrNull;
         if (list == null || list.isEmpty) return;
         _lastSeenAt = max(_lastSeenAt, list.last.createdAt);
@@ -745,7 +652,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           _scrollToEnd();
           _maybeMarkRead();
         }
-        // Decrypt any new ciphertext-only rows surfaced by REST history.
         if (widget.e2e) {
           for (final m in list) {
             if (m.isE2e && m.text.isEmpty && m.deletedAt == null) {
@@ -755,265 +661,104 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         }
       },
     );
+  }
 
-    // Один разовый скролл в конец при первом появлении кэша.
-    if (!_didInitialScroll && cached.isNotEmpty) {
-      _didInitialScroll = true;
-      _lastTailId = cached.last.id;
-      _lastSeenAt = max(_lastSeenAt, cached.last.createdAt);
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToEnd(animate: false);
-        _maybeMarkRead();
-      });
-    }
+  void _maybeInitialScroll(List<CachedMessage> cached) {
+    if (_didInitialScroll || cached.isEmpty) return;
+    _didInitialScroll = true;
+    _lastTailId = cached.last.id;
+    _lastSeenAt = max(_lastSeenAt, cached.last.createdAt);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToEnd(animate: false);
+      _maybeMarkRead();
+    });
+  }
 
-    final allItems = <_Row>[];
-    for (final m in cached) {
-      allItems.add(_Row.server(m));
-    }
-    for (final p in _pending.values) {
-      allItems.add(_Row.pending(p, me, myUsername));
-    }
-    allItems.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+  List<ChatRow> _buildRows(
+    List<CachedMessage> cached,
+    String me,
+    String myUsername,
+  ) {
+    final items = <ChatRow>[
+      for (final m in cached) ChatRow.server(m),
+      for (final p in _pending.values) ChatRow.pending(p, me, myUsername),
+    ];
+    items.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return items;
+  }
 
-    return GlassPage(
-      background: const AppBackground(),
-      statusBarStyle: GlassStatusBarStyle.light,
-      edgeToEdge: true,
-      child: AdaptiveLiquidGlassLayer(
-        clipBehavior: Clip.none,
-        child: Scaffold(
-        backgroundColor: Colors.transparent,
-        extendBodyBehindAppBar: true,
-        extendBody: true,
-        appBar: GlassAppBar(
-          leading: Padding(
-            padding: const EdgeInsets.only(left: 8),
-            child: GlassIconButton(
-              size: 36,
-              icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.onGlass, size: 18),
-              onPressed: () => Navigator.pop(context),
-            ),
+  GlassAppBar _appBar() => GlassAppBar(
+        leading: Padding(
+          padding: const EdgeInsets.only(left: 8),
+          child: GlassIconButton(
+            size: 36,
+            icon: const Icon(Icons.arrow_back_ios_new,
+                color: AppColors.onGlass, size: 18),
+            onPressed: () => Navigator.pop(context),
           ),
-          title: Text(
-            widget.roomName,
-            style: const TextStyle(
+        ),
+        title: Text(
+          widget.roomName,
+          style: const TextStyle(
+            color: AppColors.onGlass,
+            fontWeight: FontWeight.w600,
+            fontSize: 16,
+          ),
+        ),
+        actions: [
+          GlassIconButton(
+            size: 36,
+            icon: Icon(
+              _muted ? Icons.notifications_off : Icons.notifications_active,
               color: AppColors.onGlass,
-              fontWeight: FontWeight.w600,
-              fontSize: 16,
             ),
+            onPressed: _toggleMute,
           ),
-          actions: [
-            GlassIconButton(
-              size: 36,
-              icon: Icon(
-                _muted ? Icons.notifications_off : Icons.notifications_active,
-                color: AppColors.onGlass,
-              ),
-              onPressed: _toggleMute,
-            ),
-            const SizedBox(width: 6),
-            GlassIconButton(
-              size: 36,
-              icon: const Icon(Icons.people_outline, color: AppColors.onGlass),
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => MembersScreen(
-                    roomId: widget.roomId,
-                    roomName: widget.roomName,
-                    isPublic: widget.isPublic,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-          ],
-        ),
-        body: Column(
-          children: [
-            if (!_connected)
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 24, vertical: 4),
-                child: GlassProgressIndicator.linear(height: 2, minWidth: 60),
-              ),
-            if (_loadingOlder)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 6),
-                child: GlassProgressIndicator.circular(size: 18),
-              ),
-            Expanded(
-              child: ListView.builder(
-                controller: _scroll,
-                reverse: true,
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
-                itemCount: allItems.length,
-                itemBuilder: (_, i) =>
-                    _bubble(allItems[allItems.length - 1 - i], me),
-              ),
-            ),
-            if (_peerTyping.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: GlassChip(
-                    label: _peerTyping.length == 1
-                        ? 'печатает…'
-                        : '${_peerTyping.length} печатают…',
-                    icon: const Icon(Icons.more_horiz, size: 14, color: AppColors.onGlassMuted),
-                  ),
-                ),
-              ),
-            SafeArea(
-              top: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(10, 4, 10, 8),
-                child: GlassPanel(
-                  padding: const EdgeInsets.fromLTRB(6, 6, 6, 6),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      GlassIconButton(
-                        size: 38,
-                        icon: const Icon(Icons.image_outlined, color: AppColors.onGlass),
-                        onPressed: _pickAndSendImage,
-                      ),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: GlassTextField(
-                          controller: _ctrl,
-                          placeholder: 'Сообщение…',
-                          minLines: 1,
-                          maxLines: 5,
-                          textInputAction: TextInputAction.send,
-                          onChanged: _onTextChanged,
-                          onSubmitted: (_) => _send(),
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      GlassIconButton(
-                        size: 42,
-                        icon: const Icon(Icons.send_rounded, color: AppColors.onGlass),
-                        onPressed: _send,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-        ),
-      ),
-    );
-  }
-
-  Widget _bubble(_Row r, String me) {
-    final mine = r.userId == me;
-    final maxW = MediaQuery.of(context).size.width * 0.75;
-    final canEdit = r.kind == _RowKind.server && mine && !r.deleted;
-
-    final bubble = Container(
-      constraints: BoxConstraints(maxWidth: maxW),
-      margin: const EdgeInsets.symmetric(vertical: 3),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        gradient: mine
-            ? const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xCC6E6BFF), Color(0xCCB46CFF)],
-              )
-            : null,
-        color: mine ? null : const Color(0x1FFFFFFF),
-        border: Border.all(color: const Color(0x33FFFFFF), width: 0.5),
-        borderRadius: BorderRadius.only(
-          topLeft: const Radius.circular(16),
-          topRight: const Radius.circular(16),
-          bottomLeft: Radius.circular(mine ? 16 : 4),
-          bottomRight: Radius.circular(mine ? 4 : 16),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (!mine && r.username.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 2),
-              child: Text(
-                r.username,
-                style: const TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.onGlassMuted,
-                ),
-              ),
-            ),
-          if (r.attachment != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 2, bottom: 4),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: _AttachmentImage(
-                  attachment: r.attachment!,
-                  e2e: widget.e2e,
-                  roomId: widget.roomId,
-                  token: ref.read(authProvider)?.token ?? '',
-                ),
-              ),
-            ),
-          if (r.deleted)
-            const Text(
-              'сообщение удалено',
-              style: TextStyle(
-                fontStyle: FontStyle.italic,
-                color: AppColors.onGlassDim,
-              ),
-            )
-          else if (r.text.isNotEmpty)
-            Text(
-              r.text,
-              style: const TextStyle(color: AppColors.onGlass, height: 1.3),
-            ),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (r.edited && !r.deleted)
-                const Padding(
-                  padding: EdgeInsets.only(top: 2, right: 6),
-                  child: Text(
-                    'изменено',
-                    style: TextStyle(fontSize: 10, color: AppColors.onGlassDim),
-                  ),
-                ),
-              if (mine)
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Icon(
-                    r.kind == _RowKind.pending
-                        ? Icons.access_time
-                        : Icons.done_all,
-                    size: 12,
-                    color: AppColors.onGlassDim,
-                  ),
-                ),
-            ],
+          const SizedBox(width: 6),
+          GlassIconButton(
+            size: 36,
+            icon: const Icon(Icons.people_outline, color: AppColors.onGlass),
+            onPressed: _openMembers,
           ),
+          const SizedBox(width: 8),
         ],
-      ),
-    );
+      );
 
-    return Align(
-      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: GestureDetector(
-        onLongPress: canEdit ? () => _showMsgMenu(r.serverMsg!) : null,
-        child: bubble,
+  void _openMembers() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MembersScreen(
+          roomId: widget.roomId,
+          roomName: widget.roomName,
+          isPublic: widget.isPublic,
+          e2e: widget.e2e,
+          keyVersion: widget.keyVersion,
+        ),
       ),
     );
   }
+
+  Widget _messageList(List<ChatRow> rows, String me) => ListView.builder(
+        controller: _scroll,
+        reverse: true,
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+        itemCount: rows.length,
+        itemBuilder: (_, i) {
+          final r = rows[rows.length - 1 - i];
+          final mine = r.userId == me;
+          return MessageBubble(
+            row: r,
+            mine: mine,
+            roomId: widget.roomId,
+            e2e: widget.e2e,
+            token: _token ?? '',
+            onLongPress: (r.kind == ChatRowKind.server && mine && !r.deleted)
+                ? () => _showMsgMenu(r.serverMsg!)
+                : null,
+          );
+        },
+      );
 
   void _showMsgMenu(CachedMessage m) {
     showModalBottomSheet<void>(
@@ -1029,175 +774,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               children: [
                 if (m.text.isNotEmpty)
                   GlassListTile.standalone(
-                    leading: const Icon(Icons.edit_outlined, color: AppColors.onGlass),
-                    title: const Text('Редактировать', style: TextStyle(color: AppColors.onGlass)),
-                    onTap: () { Navigator.pop(ctx); _editMsg(m); },
+                    leading:
+                        const Icon(Icons.edit_outlined, color: AppColors.onGlass),
+                    title: const Text('Редактировать',
+                        style: TextStyle(color: AppColors.onGlass)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _editMsg(m);
+                    },
                   ),
                 GlassListTile.standalone(
-                  leading: const Icon(Icons.delete_outline, color: AppColors.danger),
-                  title: const Text('Удалить', style: TextStyle(color: AppColors.danger)),
-                  onTap: () { Navigator.pop(ctx); _deleteMsg(m); },
+                  leading: const Icon(Icons.delete_outline,
+                      color: AppColors.danger),
+                  title: const Text('Удалить',
+                      style: TextStyle(color: AppColors.danger)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _deleteMsg(m);
+                  },
                 ),
               ],
             ),
           ),
         ),
       ),
-    );
-  }
-}
-
-enum _RowKind { server, pending }
-
-class _Row {
-  final _RowKind kind;
-  final String userId;
-  final String username;
-  final String text;
-  final int createdAt;
-  final bool edited;
-  final bool deleted;
-  final String? attachmentUrl;
-  final CachedAttachment? attachment;
-  final CachedMessage? serverMsg;
-
-  _Row._({
-    required this.kind,
-    required this.userId,
-    required this.username,
-    required this.text,
-    required this.createdAt,
-    required this.edited,
-    required this.deleted,
-    required this.attachmentUrl,
-    required this.attachment,
-    required this.serverMsg,
-  });
-
-  factory _Row.server(CachedMessage m) => _Row._(
-        kind: _RowKind.server,
-        userId: m.userId,
-        username: m.username,
-        text: m.text,
-        createdAt: m.createdAt,
-        edited: m.editedAt != null,
-        deleted: m.deletedAt != null,
-        attachmentUrl: m.attachment?.url,
-        attachment: m.attachment,
-        serverMsg: m,
-      );
-
-  factory _Row.pending(_Pending p, String userId, String username) => _Row._(
-        kind: _RowKind.pending,
-        userId: userId,
-        username: username,
-        text: p.text,
-        createdAt: p.createdAt,
-        edited: false,
-        deleted: false,
-        attachmentUrl: p.attachment?.url,
-        attachment: p.attachment,
-        serverMsg: null,
-      );
-}
-
-/// Renders an image inside a chat bubble. For plain rooms it's a thin wrapper
-/// over [Image.network]; for E2E rooms it downloads the ciphertext, decrypts
-/// it with the room key, and renders the resulting bytes from memory.
-class _AttachmentImage extends StatefulWidget {
-  final CachedAttachment attachment;
-  final bool e2e;
-  final String roomId;
-  final String token;
-  const _AttachmentImage({
-    required this.attachment,
-    required this.e2e,
-    required this.roomId,
-    required this.token,
-  });
-
-  @override
-  State<_AttachmentImage> createState() => _AttachmentImageState();
-}
-
-class _AttachmentImageState extends State<_AttachmentImage> {
-  Uint8List? _bytes;
-  bool _failed = false;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.e2e && widget.attachment.isE2e) {
-      _loadAndDecrypt();
-    }
-  }
-
-  Future<void> _loadAndDecrypt() async {
-    final att = widget.attachment;
-    if (att.id == null) {
-      setState(() => _failed = true);
-      return;
-    }
-    try {
-      final api = Api(token: widget.token);
-      final cipherBytes = await api.downloadAttachment(att.id!);
-      final key = await RoomKeyCache.get(
-        api,
-        widget.roomId,
-        att.keyVersion ?? 0,
-      );
-      if (key == null) {
-        if (mounted) setState(() => _failed = true);
-        return;
-      }
-      final plain = await E2E.decryptAttachment(
-        roomKey: key,
-        cipher: AttachmentCipher(
-          ciphertext: Uint8List.fromList(cipherBytes),
-          iv: Uint8List.fromList(base64Decode(att.iv!)),
-          wrappedKey: Uint8List.fromList(base64Decode(att.wrappedKey!)),
-          wrappedKeyIv: Uint8List.fromList(base64Decode(att.wrappedKeyIv!)),
-        ),
-      );
-      if (mounted) setState(() => _bytes = plain);
-    } catch (_) {
-      if (mounted) setState(() => _failed = true);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final placeholder = Container(
-      width: 220,
-      height: 160,
-      alignment: Alignment.center,
-      color: const Color(0x22000000),
-      child: const SizedBox(
-        width: 22,
-        height: 22,
-        child: CircularProgressIndicator(strokeWidth: 2),
-      ),
-    );
-    final brokenIcon = const SizedBox(
-      width: 220,
-      height: 160,
-      child: Center(
-        child: Icon(Icons.broken_image, color: AppColors.onGlassDim),
-      ),
-    );
-
-    if (widget.e2e && widget.attachment.isE2e) {
-      if (_failed) return brokenIcon;
-      if (_bytes == null) return placeholder;
-      return Image.memory(_bytes!, width: 220, fit: BoxFit.cover);
-    }
-    final url = widget.attachment.url;
-    if (url == null) return brokenIcon;
-    return Image.network(
-      url,
-      width: 220,
-      fit: BoxFit.cover,
-      errorBuilder: (_, __, ___) => brokenIcon,
     );
   }
 }
