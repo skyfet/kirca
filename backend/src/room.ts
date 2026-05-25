@@ -307,18 +307,40 @@ export class Room extends DurableObject<Env> {
   ): Promise<Record<string, unknown> | null> {
     if (!attachmentId) return null;
     const a = await this.env.DB
-      .prepare("SELECT id, mime, r2_key, width, height FROM attachments WHERE id = ?")
+      .prepare(
+        "SELECT id, mime, r2_key, width, height, wrapped_key, wrapped_key_iv, iv, key_version FROM attachments WHERE id = ?",
+      )
       .bind(attachmentId)
-      .first<{ id: string; mime: string; r2_key: string; width: number | null; height: number | null }>();
+      .first<{
+        id: string;
+        mime: string;
+        r2_key: string;
+        width: number | null;
+        height: number | null;
+        wrapped_key: string | null;
+        wrapped_key_iv: string | null;
+        iv: string | null;
+        key_version: number | null;
+      }>();
     if (!a) return null;
     const base = this.env.R2_PUBLIC_BASE?.replace(/\/+$/, "") ?? null;
-    return {
+    // E2E attachments never have a public URL (R2 holds ciphertext) — clients
+    // hit the authed /attachments/:id passthrough instead.
+    const isE2e = a.wrapped_key !== null;
+    const payload: Record<string, unknown> = {
       id: a.id,
       mime: a.mime,
-      url: base ? `${base}/${a.r2_key}` : null,
+      url: !isE2e && base ? `${base}/${a.r2_key}` : null,
       width: a.width,
       height: a.height,
     };
+    if (isE2e) {
+      payload.wrapped_key = a.wrapped_key;
+      payload.wrapped_key_iv = a.wrapped_key_iv;
+      payload.iv = a.iv;
+      payload.key_version = a.key_version;
+    }
+    return payload;
   }
 
   private async pushOffline(

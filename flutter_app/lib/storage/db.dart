@@ -37,15 +37,17 @@ class AppDb {
     final path = p.join(dir.path, 'kirca.db');
     final db = await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, _) async {
         await _createV1(db);
         await _createV2(db);
         await _migrateV3(db);
+        await _migrateV4(db);
       },
       onUpgrade: (db, oldV, newV) async {
         if (oldV < 2) await _createV2(db);
         if (oldV < 3) await _migrateV3(db);
+        if (oldV < 4) await _migrateV4(db);
       },
     );
     _db = db;
@@ -123,6 +125,30 @@ class AppDb {
         inviter_id           TEXT,
         inviter_username     TEXT,
         inviter_display_name TEXT,
+        created_at           INTEGER NOT NULL
+      )
+    ''');
+  }
+
+  // v4: friends + incoming friend requests. Cached locally so the combined
+  // "Друзья" screen renders instantly on cold start without a network hop.
+  static Future<void> _migrateV4(Database db) async {
+    await db.execute('''
+      CREATE TABLE friends(
+        user_id      TEXT PRIMARY KEY,
+        username     TEXT NOT NULL,
+        display_name TEXT,
+        avatar_url   TEXT,
+        since        INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE friend_requests(
+        id                   TEXT PRIMARY KEY,
+        from_user_id         TEXT NOT NULL,
+        from_username        TEXT NOT NULL,
+        from_display_name    TEXT,
+        from_avatar_url      TEXT,
         created_at           INTEGER NOT NULL
       )
     ''');

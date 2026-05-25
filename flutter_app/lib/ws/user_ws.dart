@@ -116,7 +116,44 @@ class UserWs {
       case 'invite_revoked':
         _onInviteRevoked(m);
         break;
+      case 'friend_request_received':
+        _onFriendRequestReceived(m);
+        break;
+      case 'friend_added':
+        _onFriendAdded(m);
+        break;
+      case 'friend_removed':
+        _onFriendRemoved(m);
+        break;
     }
+  }
+
+  Future<void> _onFriendRequestReceived(Map<String, dynamic> m) async {
+    final req = m['request'] as Map<String, dynamic>?;
+    if (req == null) return;
+    await FriendRequestsCache.upsert(req);
+  }
+
+  Future<void> _onFriendAdded(Map<String, dynamic> m) async {
+    final uid = m['user_id']?.toString();
+    final un = m['username']?.toString();
+    if (uid == null || un == null || uid.isEmpty || un.isEmpty) return;
+    await FriendsCache.upsert(userId: uid, username: un);
+    // Server-confirmed friendship — drop any matching pending request locally.
+    try {
+      final cur = await FriendRequestsCache.snapshot();
+      for (final r in cur) {
+        if (r.fromUserId == uid) {
+          await FriendRequestsCache.remove(r.id);
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _onFriendRemoved(Map<String, dynamic> m) async {
+    final uid = m['user_id']?.toString();
+    if (uid == null) return;
+    await FriendsCache.remove(uid);
   }
 
   Future<void> _refreshAll() async {
@@ -127,6 +164,14 @@ class UserWs {
     try {
       final inv = await Api(token: token).invites();
       await InvitesCache.replaceAll(inv.cast<Map<String, dynamic>>());
+    } catch (_) { /* */ }
+    try {
+      final fs = await Api(token: token).friends();
+      await FriendsCache.replaceAll(fs.cast<Map<String, dynamic>>());
+    } catch (_) { /* */ }
+    try {
+      final rs = await Api(token: token).friendRequests();
+      await FriendRequestsCache.replaceAll(rs.cast<Map<String, dynamic>>());
     } catch (_) { /* */ }
   }
 

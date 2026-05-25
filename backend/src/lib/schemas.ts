@@ -63,6 +63,14 @@ export const inviteCreateBody = z.object({
   message: "username or user_id required",
 });
 
+// Запрос в друзья: либо по username (UX-первичный путь), либо по user_id.
+export const friendRequestCreateBody = z.object({
+  username: usernameSchema.optional(),
+  user_id: z.string().min(1).max(64).optional(),
+}).refine((v) => v.username || v.user_id, {
+  message: "username or user_id required",
+});
+
 export const muteBody = z.object({
   muted: z.boolean(),
 });

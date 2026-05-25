@@ -277,6 +277,64 @@ class Api {
     _decode(r);
   }
 
+  // ---- friends + friend-requests ----
+  Future<List<dynamic>> friends() async {
+    final r = await http.get(Uri.parse('${Config.apiBase}/friends'), headers: _headers);
+    return (_decode(r))['friends'] as List<dynamic>;
+  }
+
+  Future<void> removeFriend(String userId) async {
+    final r = await http.delete(
+      Uri.parse('${Config.apiBase}/friends/$userId'),
+      headers: _headers,
+    );
+    if (r.statusCode != 204) _decode(r);
+  }
+
+  Future<Map<String, dynamic>> sendFriendRequest({String? username, String? userId}) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/friend-requests'),
+      headers: _headers,
+      body: jsonEncode({
+        if (username != null) 'username': username,
+        if (userId != null) 'user_id': userId,
+      }),
+    );
+    return _decode(r);
+  }
+
+  Future<List<dynamic>> friendRequests() async {
+    final r = await http.get(
+      Uri.parse('${Config.apiBase}/friend-requests'),
+      headers: _headers,
+    );
+    return (_decode(r))['requests'] as List<dynamic>;
+  }
+
+  Future<Map<String, dynamic>> acceptFriendRequest(String id) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/friend-requests/$id/accept'),
+      headers: _headers,
+    );
+    return _decode(r);
+  }
+
+  Future<void> declineFriendRequest(String id) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/friend-requests/$id/decline'),
+      headers: _headers,
+    );
+    _decode(r);
+  }
+
+  Future<void> cancelFriendRequest(String id) async {
+    final r = await http.delete(
+      Uri.parse('${Config.apiBase}/friend-requests/$id'),
+      headers: _headers,
+    );
+    if (r.statusCode != 204) _decode(r);
+  }
+
   // ---- messages: edit / delete / read ----
   Future<void> editMessage(
     String roomId,

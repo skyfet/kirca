@@ -411,21 +411,15 @@ class MessagesCache {
     _notifier.notify(roomId);
   }
 
+  /// Removes the message row entirely. Deleted messages are gone from the
+  /// local cache — re-fetching history filters them too (see _insertMsgRaw).
   static Future<void> applyDelete(
     String roomId,
     String id,
     int? deletedAt,
   ) async {
     final db = await AppDb.open();
-    await db.update(
-      'messages',
-      {
-        'text': '',
-        'deleted_at': deletedAt ?? DateTime.now().millisecondsSinceEpoch,
-      },
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    await db.delete('messages', where: 'id = ?', whereArgs: [id]);
     _notifier.notify(roomId);
   }
 
@@ -454,6 +448,13 @@ class MessagesCache {
   ) async {
     final id = m['id']?.toString();
     if (id == null) return;
+    // Server still tombstones deleted messages (`deleted_at` set, text wiped).
+    // We treat them as gone client-side — drop any existing row, skip insert.
+    final deletedAt = (m['deleted_at'] as num?)?.toInt();
+    if (deletedAt != null) {
+      await x.delete('messages', where: 'id = ?', whereArgs: [id]);
+      return;
+    }
     final att = m['attachment'] as Map<String, dynamic>?;
     // Preserve any locally-decrypted plaintext we already cached for this id —
     // server replays its empty `text` field for E2E rows, so blind overwrite
@@ -630,6 +631,186 @@ class InvitesCache {
   }
 }
 
+// ---- friends + friend requests --------------------------------------------
+
+class CachedFriend {
+  final String userId;
+  final String username;
+  final String? displayName;
+  final String? avatarUrl;
+  final int since;
+
+  const CachedFriend({
+    required this.userId,
+    required this.username,
+    this.displayName,
+    this.avatarUrl,
+    required this.since,
+  });
+
+  factory CachedFriend.fromRow(Map<String, dynamic> r) => CachedFriend(
+        userId: r['user_id'] as String,
+        username: r['username'] as String,
+        displayName: r['display_name'] as String?,
+        avatarUrl: r['avatar_url'] as String?,
+        since: r['since'] as int? ?? 0,
+      );
+}
+
+class CachedFriendRequest {
+  final String id;
+  final String fromUserId;
+  final String fromUsername;
+  final String? fromDisplayName;
+  final String? fromAvatarUrl;
+  final int createdAt;
+
+  const CachedFriendRequest({
+    required this.id,
+    required this.fromUserId,
+    required this.fromUsername,
+    this.fromDisplayName,
+    this.fromAvatarUrl,
+    required this.createdAt,
+  });
+
+  factory CachedFriendRequest.fromRow(Map<String, dynamic> r) =>
+      CachedFriendRequest(
+        id: r['id'] as String,
+        fromUserId: r['from_user_id'] as String,
+        fromUsername: r['from_username'] as String,
+        fromDisplayName: r['from_display_name'] as String?,
+        fromAvatarUrl: r['from_avatar_url'] as String?,
+        createdAt: r['created_at'] as int,
+      );
+}
+
+class FriendsCache {
+  static final _notifier = _Notifier<int>();
+  static const _key = 0;
+
+  static Stream<List<CachedFriend>> watch() async* {
+    yield await snapshot();
+    await for (final _ in _notifier.watch(_key)) {
+      yield await snapshot();
+    }
+  }
+
+  static Future<List<CachedFriend>> snapshot() async {
+    final db = await AppDb.open();
+    final rows = await db.query('friends', orderBy: 'username ASC');
+    return rows.map(CachedFriend.fromRow).toList(growable: false);
+  }
+
+  static Future<void> replaceAll(List<Map<String, dynamic>> list) async {
+    final db = await AppDb.open();
+    await db.transaction((txn) async {
+      await txn.delete('friends');
+      for (final f in list) {
+        await txn.insert(
+          'friends',
+          {
+            'user_id': f['user_id']?.toString() ?? '',
+            'username': f['username']?.toString() ?? '',
+            'display_name': f['display_name']?.toString(),
+            'avatar_url': f['avatar_url']?.toString(),
+            'since': (f['since'] as num?)?.toInt() ?? 0,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+    _notifier.notify(_key);
+  }
+
+  static Future<void> upsert({
+    required String userId,
+    required String username,
+    String? displayName,
+    String? avatarUrl,
+    int? since,
+  }) async {
+    final db = await AppDb.open();
+    await db.insert(
+      'friends',
+      {
+        'user_id': userId,
+        'username': username,
+        'display_name': displayName,
+        'avatar_url': avatarUrl,
+        'since': since ?? DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    _notifier.notify(_key);
+  }
+
+  static Future<void> remove(String userId) async {
+    final db = await AppDb.open();
+    await db.delete('friends', where: 'user_id = ?', whereArgs: [userId]);
+    _notifier.notify(_key);
+  }
+}
+
+class FriendRequestsCache {
+  static final _notifier = _Notifier<int>();
+  static const _key = 0;
+
+  static Stream<List<CachedFriendRequest>> watch() async* {
+    yield await snapshot();
+    await for (final _ in _notifier.watch(_key)) {
+      yield await snapshot();
+    }
+  }
+
+  static Future<List<CachedFriendRequest>> snapshot() async {
+    final db = await AppDb.open();
+    final rows = await db.query('friend_requests', orderBy: 'created_at DESC');
+    return rows.map(CachedFriendRequest.fromRow).toList(growable: false);
+  }
+
+  static Future<void> replaceAll(List<Map<String, dynamic>> list) async {
+    final db = await AppDb.open();
+    await db.transaction((txn) async {
+      await txn.delete('friend_requests');
+      for (final r in list) {
+        await txn.insert(
+          'friend_requests',
+          _shapeRow(r),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+    _notifier.notify(_key);
+  }
+
+  static Future<void> upsert(Map<String, dynamic> r) async {
+    final db = await AppDb.open();
+    await db.insert(
+      'friend_requests',
+      _shapeRow(r),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    _notifier.notify(_key);
+  }
+
+  static Future<void> remove(String id) async {
+    final db = await AppDb.open();
+    await db.delete('friend_requests', where: 'id = ?', whereArgs: [id]);
+    _notifier.notify(_key);
+  }
+
+  static Map<String, Object?> _shapeRow(Map<String, dynamic> r) => {
+        'id': r['id']?.toString() ?? '',
+        'from_user_id': r['from_user_id']?.toString() ?? '',
+        'from_username': r['from_username']?.toString() ?? '',
+        'from_display_name': r['from_display_name']?.toString(),
+        'from_avatar_url': r['from_avatar_url']?.toString(),
+        'created_at': (r['created_at'] as num?)?.toInt() ??
+            DateTime.now().millisecondsSinceEpoch,
+      };
+}
+
 // ---- wipe (на logout) ------------------------------------------------------
 
 Future<void> wipeAllCaches() async {
@@ -640,7 +821,11 @@ Future<void> wipeAllCaches() async {
     await txn.delete('members');
     await txn.delete('invites');
     await txn.delete('outbox');
+    await txn.delete('friends');
+    await txn.delete('friend_requests');
   });
   RoomsCache._notifier.notify(RoomsCache._key);
   InvitesCache._notifier.notify(InvitesCache._key);
+  FriendsCache._notifier.notify(FriendsCache._key);
+  FriendRequestsCache._notifier.notify(FriendRequestsCache._key);
 }
