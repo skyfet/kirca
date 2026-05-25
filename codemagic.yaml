@@ -54,7 +54,11 @@ workflows:
         script: |
           set -e
           PBX=ios/Runner.xcodeproj/project.pbxproj
-          sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = ai\.kirca\.kirca;/PRODUCT_BUNDLE_IDENTIFIER = ai.kirca.app;/g' "$PBX"
+          # The committed pbxproj may carry the default `com.example.kirca` id (flutter
+          # create never overwrites existing files), or `ai.kirca.kirca` if it was
+          # regenerated with `--org ai.kirca`. Handle both, and leave already-patched
+          # files alone so the step is idempotent.
+          sed -i '' -E 's/PRODUCT_BUNDLE_IDENTIFIER = (com\.example\.kirca|ai\.kirca\.kirca);/PRODUCT_BUNDLE_IDENTIFIER = ai.kirca.app;/g' "$PBX"
           grep -q "PRODUCT_BUNDLE_IDENTIFIER = ai.kirca.app;" "$PBX"
 
       - name: Apply iOS patches (AppDelegate + entitlements)
