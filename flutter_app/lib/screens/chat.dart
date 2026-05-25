@@ -6,8 +6,6 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
-import 'package:web_socket_channel/status.dart' as ws_status;
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../api.dart';
 import '../config.dart';
@@ -21,11 +19,10 @@ import '../theme/app_theme.dart';
 import '../util/uuid.dart';
 import 'chat/chat_input.dart';
 import 'chat/chat_row.dart';
+import 'chat/chat_transport.dart';
 import 'chat/message_bubble.dart';
 import 'members.dart';
 
-/// Reconnect backoff in seconds, picked by `_attempt` index.
-const List<int> _kReconnectDelaysSec = [1, 2, 4, 8, 16, 30];
 const int _kHistoryPageSize = 50;
 const int _kCatchupLimit = 200;
 
@@ -56,12 +53,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   final TextEditingController _inputCtrl = TextEditingController();
   final ScrollController _scroll = ScrollController();
 
-  // ---- websocket -----------------------------------------------------------
-  WebSocketChannel? _ws;
-  StreamSubscription? _sub;
+  // ---- transport (WS + send) ----------------------------------------------
+  ChatTransport? _transport;
   bool _connected = false;
-  int _wsAttempt = 0;
-  Timer? _reconnectTimer;
 
   // ---- lifecycle flag ------------------------------------------------------
   bool _disposed = false;
@@ -79,10 +73,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   bool _loadingOlder = false;
   bool _hasMoreOlder = true;
 
-  // ---- typing indicators ---------------------------------------------------
+  // ---- typing indicators (peers we're seeing, not our own) ----------------
   final Map<String, Timer> _peerTyping = {};
-  DateTime _lastTypingSent = DateTime.fromMillisecondsSinceEpoch(0);
-  Timer? _typingStopTimer;
 
   // ---- room state ----------------------------------------------------------
   bool _muted = false;
@@ -129,15 +121,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _currentRoomCtrl.state = null;
     }
     WidgetsBinding.instance.removeObserver(this);
-    _reconnectTimer?.cancel();
-    _typingStopTimer?.cancel();
+    _transport?.dispose();
     for (final t in _peerTyping.values) {
       t.cancel();
     }
-    _sub?.cancel();
-    try {
-      _ws?.sink.close(ws_status.normalClosure);
-    } catch (_) {}
     _inputCtrl.dispose();
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
@@ -184,7 +171,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Future<void> _hydrateAndConnect() async {
     await _restorePendingFromOutbox();
     await _warmRoomKeyCache();
-    _connect();
+    _startTransport();
+    unawaited(_runCatchupAndResend());
   }
 
   Future<void> _restorePendingFromOutbox() async {
@@ -210,55 +198,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   // ---------------------------------------------------------------------------
-  // WebSocket lifecycle
+  // Transport bootstrap
   // ---------------------------------------------------------------------------
 
-  void _connect() {
+  void _startTransport() {
     if (_disposed) return;
     final token = _token;
     if (token == null) return;
-
-    final uri = Uri.parse(
-        '${Config.wsBase}/rooms/${widget.roomId}/ws?token=$token');
-    final ws = WebSocketChannel.connect(uri);
-    _ws = ws;
-    _sub = ws.stream.listen(
-      _onWsFrame,
-      onDone: _onDisconnect,
-      onError: (_) => _onDisconnect(),
-      cancelOnError: true,
-    );
-
-    Future<void>.microtask(_runCatchupAndResend);
+    _transport = ChatTransport(
+      roomId: widget.roomId,
+      token: token,
+      wsBase: Config.wsBase,
+      cipher: _cipher,
+      onMessage: _onWsMessage,
+      onEdit: _onWsEdit,
+      onDelete: _onWsDelete,
+      onTyping: _onWsTyping,
+      onConnectedChanged: (c) => _setStateIfMounted(() => _connected = c),
+      onUnauthorized: () => ref.read(authProvider.notifier).forceLogout(),
+      onRateLimited: () => _toast('Слишком много сообщений, подожди немного'),
+      onMissingRoomKey: () =>
+          _toast('Не удалось получить ключ комнаты — отправка отложена'),
+    )..start();
   }
 
-  void _onWsFrame(dynamic raw) {
-    _wsAttempt = 0;
-    if (!_connected) _setStateIfMounted(() => _connected = true);
-    try {
-      final m = jsonDecode(raw as String) as Map<String, dynamic>;
-      switch (m['type']) {
-        case 'msg':
-          _onWsMessage(m);
-          break;
-        case 'edit':
-          _onWsEdit(m);
-          break;
-        case 'delete':
-          _onWsDelete(m);
-          break;
-        case 'typing':
-          _onWsTyping(m);
-          break;
-        case 'error':
-          if (m['code']?.toString() == 'rate_limited') {
-            _toast('Слишком много сообщений, подожди немного');
-          }
-          break;
-      }
-    } catch (_) {/* bad frame — ignore */}
-  }
-
+  /// Backfill anything we missed while offline, then re-flush pending sends.
+  /// Catchup is REST-driven so it doesn't need to wait for WS handshake.
   Future<void> _runCatchupAndResend() async {
     final api = _api;
     if (api != null && _lastSeenAt > 0) {
@@ -275,29 +240,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       } catch (_) {}
     }
     _resendPending();
-    if (!_connected) _setStateIfMounted(() => _connected = true);
-  }
-
-  void _onDisconnect() {
-    if (_disposed) return;
-    final code = _ws?.closeCode;
-    _sub?.cancel();
-    _sub = null;
-    try {
-      _ws?.sink.close();
-    } catch (_) {}
-    _ws = null;
-    _setStateIfMounted(() => _connected = false);
-
-    if (code == 1008) {
-      ref.read(authProvider.notifier).forceLogout();
-      return;
-    }
-    final secs = _kReconnectDelaysSec[
-        min(_wsAttempt, _kReconnectDelaysSec.length - 1)];
-    _wsAttempt++;
-    _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(Duration(seconds: secs), _connect);
   }
 
   // ---------------------------------------------------------------------------
@@ -405,79 +347,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       text: text,
       createdAt: createdAt,
     );
-    if (widget.e2e) {
-      unawaited(_wsSendEncrypted(clientId, text, attachmentId));
-    } else {
-      _wsSendPlain(clientId, text, attachmentId);
-    }
-  }
-
-  void _wsSendPlain(String clientId, String text, String? attachmentId) {
-    _wsSend({
-      'type': 'msg',
-      'client_id': clientId,
-      if (text.isNotEmpty) 'text': text,
-      if (attachmentId != null) 'attachment_id': attachmentId,
-    });
-  }
-
-  Future<void> _wsSendEncrypted(
-    String clientId,
-    String text,
-    String? attachmentId,
-  ) async {
-    final cipher = _cipher;
-    if (cipher == null) return;
-    try {
-      final enc = await cipher.encryptMessage(text);
-      _wsSend({
-        'type': 'msg',
-        'client_id': clientId,
-        'ciphertext': enc.cipher.ctB64,
-        'iv': enc.cipher.ivB64,
-        'key_version': enc.keyVersion,
-        if (attachmentId != null) 'attachment_id': attachmentId,
-      });
-    } on RoomKeyUnavailable {
-      _toast('Не удалось получить ключ комнаты — отправка отложена');
-    } catch (_) {/* серверу отдадим из outbox позже */}
-  }
-
-  void _wsSend(Map<String, Object?> payload) {
-    final ws = _ws;
-    if (ws == null) return;
-    try {
-      ws.sink.add(jsonEncode(payload));
-    } catch (_) {}
+    _transport?.send(
+        clientId: clientId, text: text, attachmentId: attachmentId);
   }
 
   void _resendPending() {
+    final t = _transport;
+    if (t == null) return;
     for (final p in _pending.values) {
-      if (widget.e2e) {
-        unawaited(_wsSendEncrypted(p.clientId, p.text, p.attachment?.id));
-      } else {
-        _wsSendPlain(p.clientId, p.text, p.attachment?.id);
-      }
+      t.send(
+          clientId: p.clientId, text: p.text, attachmentId: p.attachment?.id);
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Typing notifications
-  // ---------------------------------------------------------------------------
-
-  void _onTextChanged(String _) {
-    final ws = _ws;
-    if (ws == null) return;
-    final now = DateTime.now();
-    if (now.difference(_lastTypingSent) > const Duration(seconds: 2)) {
-      _lastTypingSent = now;
-      _wsSend({'type': 'typing', 'is_typing': true});
-    }
-    _typingStopTimer?.cancel();
-    _typingStopTimer = Timer(const Duration(seconds: 3), () {
-      _wsSend({'type': 'typing', 'is_typing': false});
-    });
-  }
+  void _onTextChanged(String _) => _transport?.notifyTyping();
 
   // ---------------------------------------------------------------------------
   // Image picking + upload
