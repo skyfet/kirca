@@ -1,8 +1,13 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../api.dart';
+import '../crypto/e2e.dart';
+import '../crypto/room_keys.dart';
 import '../state.dart';
 import '../storage/cache.dart';
 import '../theme/app_background.dart';
@@ -12,11 +17,15 @@ class MembersScreen extends ConsumerStatefulWidget {
   final String roomId;
   final String roomName;
   final bool isPublic;
+  final bool e2e;
+  final int keyVersion;
   const MembersScreen({
     super.key,
     required this.roomId,
     required this.roomName,
     required this.isPublic,
+    this.e2e = false,
+    this.keyVersion = 0,
   });
 
   @override
@@ -99,7 +108,15 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
     final auth = ref.read(authProvider);
     if (auth == null) return;
     try {
-      await Api(token: auth.token).invite(widget.roomId, username: name);
+      final api = Api(token: auth.token);
+      final invite = await api.invite(widget.roomId, username: name);
+      // For E2E rooms, immediately seal the current room key for the invitee
+      // so they can decrypt history the moment they accept. Without this, the
+      // invitee opens the chat and `RoomKeyCache._refresh` finds zero sealed
+      // entries for them → snackbar "не удалось получить ключ комнаты".
+      if (widget.e2e) {
+        await _sealCurrentRoomKeyFor(api, invite);
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Приглашение отправлено')),
@@ -110,6 +127,38 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
       }
     }
+  }
+
+  Future<void> _sealCurrentRoomKeyFor(
+    Api api,
+    Map<String, dynamic> invite,
+  ) async {
+    final inviteeId = invite['invitee_user_id']?.toString();
+    if (inviteeId == null) return;
+    final roomKey = await RoomKeyCache.latest(api, widget.roomId);
+    if (roomKey == null) return;
+    final v = RoomKeyCache.latestVersion(widget.roomId) ?? widget.keyVersion;
+    final ident = await api.getUserIdentity(inviteeId);
+    final pubB64 = ident['identity_pub']?.toString();
+    if (pubB64 == null || pubB64.isEmpty) {
+      throw Exception(
+        'у пользователя нет ключа шифрования — попроси его настроить E2E',
+      );
+    }
+    final sealed = await E2E.sealRoomKey(
+      recipientPubKey: Uint8List.fromList(base64Decode(pubB64)),
+      roomKey: roomKey,
+    );
+    await api.publishRoomKeys(
+      widget.roomId,
+      keyVersion: v,
+      keys: [
+        {
+          'member_user_id': inviteeId,
+          'sealed': base64Encode(sealed),
+        },
+      ],
+    );
   }
 
   @override

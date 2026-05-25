@@ -834,6 +834,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     roomId: widget.roomId,
                     roomName: widget.roomName,
                     isPublic: widget.isPublic,
+                    e2e: widget.e2e,
+                    keyVersion: widget.keyVersion,
                   ),
                 ),
               ),
