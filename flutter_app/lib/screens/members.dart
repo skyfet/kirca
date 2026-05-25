@@ -174,14 +174,14 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
               'Участники · ${widget.roomName}',
               style: const TextStyle(
                   color: AppColors.onGlass,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600),
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700),
             ),
             actions: [
               if (!widget.isPublic)
                 GlassIconButton(
                   size: 36,
-                  icon: const Icon(Icons.person_add_alt_1,
+                  icon: const Icon(Icons.person_add,
                       color: AppColors.onGlass),
                   onPressed: _inviteByUsername,
                 ),
@@ -244,6 +244,7 @@ class _MemberTile extends StatelessWidget {
                         un.isNotEmpty ? un.characters.first.toUpperCase() : '?',
                         style: const TextStyle(
                             color: AppColors.onGlass,
+                            fontSize: 16,
                             fontWeight: FontWeight.w700),
                       )
                     : null,
@@ -273,8 +274,11 @@ class _MemberTile extends StatelessWidget {
                 Text(
                   dn.isNotEmpty ? dn : un,
                   style: const TextStyle(
-                      color: AppColors.onGlass, fontWeight: FontWeight.w600),
+                      color: AppColors.onGlass,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600),
                 ),
+                const SizedBox(height: 2),
                 Text(
                   '@$un${member.role.isNotEmpty ? " · ${member.role}" : ""}',
                   style: const TextStyle(

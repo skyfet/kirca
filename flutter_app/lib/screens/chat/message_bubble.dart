@@ -96,7 +96,11 @@ class MessageBubble extends StatelessWidget {
 
   Widget _body() => Text(
         row.text,
-        style: const TextStyle(color: AppColors.onGlass, height: 1.3),
+        style: const TextStyle(
+          color: AppColors.onGlass,
+          fontSize: 14,
+          height: 1.3,
+        ),
       );
 
   Widget _footer() => Row(
@@ -129,6 +133,7 @@ class _DeletedNotice extends StatelessWidget {
   Widget build(BuildContext context) => const Text(
         'сообщение удалено',
         style: TextStyle(
+          fontSize: 14,
           fontStyle: FontStyle.italic,
           color: AppColors.onGlassDim,
         ),

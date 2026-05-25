@@ -165,7 +165,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           ),
           title: const Text(
             'Профиль',
-            style: TextStyle(color: AppColors.onGlass, fontSize: 17, fontWeight: FontWeight.w600),
+            style: TextStyle(color: AppColors.onGlass, fontSize: 18, fontWeight: FontWeight.w700),
           ),
         ),
         body: SafeArea(
@@ -213,9 +213,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     Center(
                       child: TextButton.icon(
                         onPressed: _pickAvatar,
-                        icon: const Icon(Icons.image_outlined, color: AppColors.onGlassMuted, size: 18),
+                        icon: const Icon(Icons.image_outlined, color: AppColors.onGlassMuted, size: 16),
                         label: const Text('Сменить аватар',
-                            style: TextStyle(color: AppColors.onGlassMuted)),
+                            style: TextStyle(color: AppColors.onGlassMuted, fontSize: 13)),
                       ),
                     ),
                     const SizedBox(height: 6),
@@ -286,18 +286,44 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                         ),
                       ),
                     ),
-                    const SizedBox(height: 12),
-                    GlassButton.custom(
-                      onTap: _delete,
-                      width: double.infinity,
-                      height: 44,
-                      glowColor: AppColors.danger,
-                      useOwnLayer: true,
-                      shape: LiquidRoundedSuperellipse(borderRadius: 12),
-                      child: const Center(
-                        child: Text(
-                          'Удалить аккаунт',
-                          style: TextStyle(color: AppColors.danger, fontWeight: FontWeight.w600),
+                    const SizedBox(height: 10),
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x40FF5C7A),
+                            blurRadius: 18,
+                          ),
+                        ],
+                      ),
+                      child: Material(
+                        color: Colors.transparent,
+                        borderRadius: BorderRadius.circular(12),
+                        child: InkWell(
+                          onTap: _delete,
+                          borderRadius: BorderRadius.circular(12),
+                          child: Ink(
+                            height: 44,
+                            decoration: BoxDecoration(
+                              color: Colors.transparent,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: const Color(0x66FF5C7A),
+                                width: 1,
+                              ),
+                            ),
+                            child: const Center(
+                              child: Text(
+                                'Удалить аккаунт',
+                                style: TextStyle(
+                                  color: AppColors.danger,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),

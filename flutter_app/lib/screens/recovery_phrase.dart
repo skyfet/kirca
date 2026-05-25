@@ -45,7 +45,7 @@ class RecoveryPhraseScreen extends StatelessWidget {
                   const Text(
                     'Запиши эти 24 слова. Без них на новом устройстве ты не '
                     'сможешь прочитать переписку в шифрованных чатах. Сервер '
-                    'не хранит твой пароль шифрования — только ты.',
+                    'не хранит твой ключ — только ты.',
                     style: TextStyle(color: AppColors.onGlassMuted, fontSize: 13),
                   ),
                   const SizedBox(height: 16),
@@ -68,7 +68,7 @@ class RecoveryPhraseScreen extends StatelessWidget {
                                       fontWeight: FontWeight.w600,
                                     ),
                                   ),
-                                  const SizedBox(height: 4),
+                                  const SizedBox(height: 6),
                                   Wrap(
                                     spacing: 8,
                                     runSpacing: 6,
@@ -147,7 +147,7 @@ class _WordChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0x18FFFFFF),
+        color: const Color(0x1AFFFFFF),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: const Color(0x33FFFFFF), width: 0.5),
       ),
@@ -216,11 +216,25 @@ class _RecoveryRestoreScreenState extends State<RecoveryRestoreScreen> {
         clipBehavior: Clip.none,
         child: Scaffold(
           backgroundColor: Colors.transparent,
-          appBar: AppBar(
-            backgroundColor: Colors.transparent,
-            foregroundColor: AppColors.onGlass,
-            elevation: 0,
-            title: const Text('Восстановление'),
+          extendBodyBehindAppBar: true,
+          appBar: GlassAppBar(
+            leading: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: GlassIconButton(
+                size: 36,
+                icon: const Icon(Icons.arrow_back_ios_new,
+                    color: AppColors.onGlass, size: 18),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
+            title: const Text(
+              'Восстановление',
+              style: TextStyle(
+                color: AppColors.onGlass,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
           ),
           body: SafeArea(
             child: Padding(

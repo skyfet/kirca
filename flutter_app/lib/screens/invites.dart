@@ -69,7 +69,7 @@ class _InvitesScreenState extends ConsumerState<InvitesScreen> {
           ),
           title: const Text(
             'Приглашения',
-            style: TextStyle(color: AppColors.onGlass, fontSize: 17, fontWeight: FontWeight.w600),
+            style: TextStyle(color: AppColors.onGlass, fontSize: 18, fontWeight: FontWeight.w700),
           ),
         ),
         body: SafeArea(
@@ -133,10 +133,12 @@ class _InviteCard extends StatelessWidget {
                   invite.roomName,
                   style: const TextStyle(
                     color: AppColors.onGlass,
+                    fontSize: 15,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                Text('Приглашает @$inviter',
+                const SizedBox(height: 2),
+                Text('приглашает @$inviter',
                     style: const TextStyle(color: AppColors.onGlassDim, fontSize: 12)),
               ],
             ),

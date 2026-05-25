@@ -133,6 +133,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
               child: GlassCard(
                 padding: const EdgeInsets.all(24),
+                shape: const LiquidRoundedSuperellipse(borderRadius: 18),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   mainAxisSize: MainAxisSize.min,
@@ -147,7 +148,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         color: AppColors.onGlass,
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 4),
                     const Text(
                       'тихий чат',
                       textAlign: TextAlign.center,
@@ -190,6 +191,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       onTap: _busy ? () {} : _submit,
                       width: double.infinity,
                       height: 48,
+                      glowColor: AppColors.accent,
                       useOwnLayer: true,
                       shape: LiquidRoundedSuperellipse(borderRadius: 14),
                       child: Center(
@@ -212,6 +214,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               ),
                       ),
                     ),
+                    if (_isRegister) ...[
+                      const SizedBox(height: 14),
+                      const Text(
+                        'после регистрации ты получишь фразу для '
+                        'восстановления — сохрани её',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: AppColors.onGlassDim,
+                          fontSize: 11,
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
