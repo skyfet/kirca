@@ -1,13 +1,10 @@
-import 'dart:convert';
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../api.dart';
-import '../crypto/e2e.dart';
-import '../crypto/room_keys.dart';
+import '../crypto/room_cipher.dart';
+import '../services/room_invite.dart';
 import '../state.dart';
 import '../storage/cache.dart';
 import '../theme/app_background.dart';
@@ -34,6 +31,38 @@ class MembersScreen extends ConsumerStatefulWidget {
 
 class _MembersScreenState extends ConsumerState<MembersScreen> {
   Future<void> _inviteByUsername() async {
+    final username = await _promptForUsername();
+    if (username == null) return;
+
+    final auth = ref.read(authProvider);
+    if (auth == null) return;
+    final api = Api(token: auth.token);
+    final inviter = RoomInviteService(api);
+
+    try {
+      await inviter.inviteByUsername(
+        roomId: widget.roomId,
+        username: username,
+        cipherForSealing: widget.e2e
+            ? RoomCipher(
+                api: api,
+                roomId: widget.roomId,
+                fallbackVersion: widget.keyVersion,
+              )
+            : null,
+      );
+      _toast('Приглашение отправлено');
+    } on PeerHasNoIdentity {
+      _toast('У пользователя нет ключа шифрования — '
+          'попроси его настроить E2E в профиле');
+    } catch (e) {
+      _toast('$e');
+    }
+  }
+
+  /// Glass-styled prompt asking for a username. Returns the cleaned-up name
+  /// (no leading @) or null if the user cancelled / left it blank.
+  Future<String?> _promptForUsername() async {
     final ctrl = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
@@ -64,7 +93,8 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
                   prefixIcon: const Icon(Icons.alternate_email, size: 18),
                   autofocus: true,
                   height: 36,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
                 ),
                 const SizedBox(height: 16),
                 Row(
@@ -76,7 +106,10 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
                         width: double.infinity,
                         useOwnLayer: true,
                         shape: LiquidRoundedSuperellipse(borderRadius: 12),
-                        child: const Center(child: Text('Отмена', style: TextStyle(color: AppColors.onGlass))),
+                        child: const Center(
+                          child: Text('Отмена',
+                              style: TextStyle(color: AppColors.onGlass)),
+                        ),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -90,7 +123,9 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
                         shape: LiquidRoundedSuperellipse(borderRadius: 12),
                         child: const Center(
                           child: Text('Пригласить',
-                              style: TextStyle(color: AppColors.onGlass, fontWeight: FontWeight.w600)),
+                              style: TextStyle(
+                                  color: AppColors.onGlass,
+                                  fontWeight: FontWeight.w600)),
                         ),
                       ),
                     ),
@@ -102,63 +137,15 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
         ),
       ),
     );
-    if (ok != true) return;
+    if (ok != true) return null;
     final name = ctrl.text.trim().replaceAll(RegExp(r'^@+'), '');
-    if (name.isEmpty) return;
-    final auth = ref.read(authProvider);
-    if (auth == null) return;
-    try {
-      final api = Api(token: auth.token);
-      final invite = await api.invite(widget.roomId, username: name);
-      // For E2E rooms, immediately seal the current room key for the invitee
-      // so they can decrypt history the moment they accept. Without this, the
-      // invitee opens the chat and `RoomKeyCache._refresh` finds zero sealed
-      // entries for them → snackbar "не удалось получить ключ комнаты".
-      if (widget.e2e) {
-        await _sealCurrentRoomKeyFor(api, invite);
-      }
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Приглашение отправлено')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
-      }
-    }
+    return name.isEmpty ? null : name;
   }
 
-  Future<void> _sealCurrentRoomKeyFor(
-    Api api,
-    Map<String, dynamic> invite,
-  ) async {
-    final inviteeId = invite['invitee_user_id']?.toString();
-    if (inviteeId == null) return;
-    final roomKey = await RoomKeyCache.latest(api, widget.roomId);
-    if (roomKey == null) return;
-    final v = RoomKeyCache.latestVersion(widget.roomId) ?? widget.keyVersion;
-    final ident = await api.getUserIdentity(inviteeId);
-    final pubB64 = ident['identity_pub']?.toString();
-    if (pubB64 == null || pubB64.isEmpty) {
-      throw Exception(
-        'у пользователя нет ключа шифрования — попроси его настроить E2E',
-      );
-    }
-    final sealed = await E2E.sealRoomKey(
-      recipientPubKey: Uint8List.fromList(base64Decode(pubB64)),
-      roomKey: roomKey,
-    );
-    await api.publishRoomKeys(
-      widget.roomId,
-      keyVersion: v,
-      keys: [
-        {
-          'member_user_id': inviteeId,
-          'sealed': base64Encode(sealed),
-        },
-      ],
-    );
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -171,52 +158,61 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
       child: AdaptiveLiquidGlassLayer(
         clipBehavior: Clip.none,
         child: Scaffold(
-        backgroundColor: Colors.transparent,
-        extendBodyBehindAppBar: true,
-        appBar: GlassAppBar(
-          leading: Padding(
-            padding: const EdgeInsets.only(left: 8),
-            child: GlassIconButton(
-              size: 36,
-              icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.onGlass, size: 18),
-              onPressed: () => Navigator.pop(context),
+          backgroundColor: Colors.transparent,
+          extendBodyBehindAppBar: true,
+          appBar: GlassAppBar(
+            leading: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: GlassIconButton(
+                size: 36,
+                icon: const Icon(Icons.arrow_back_ios_new,
+                    color: AppColors.onGlass, size: 18),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
+            title: Text(
+              'Участники · ${widget.roomName}',
+              style: const TextStyle(
+                  color: AppColors.onGlass,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600),
+            ),
+            actions: [
+              if (!widget.isPublic)
+                GlassIconButton(
+                  size: 36,
+                  icon: const Icon(Icons.person_add_alt_1,
+                      color: AppColors.onGlass),
+                  onPressed: _inviteByUsername,
+                ),
+              const SizedBox(width: 8),
+            ],
+          ),
+          body: SafeArea(
+            child: async.when(
+              loading: () =>
+                  const Center(child: GlassProgressIndicator.circular(size: 28)),
+              error: (e, _) => Center(
+                  child: Text('$e',
+                      style: const TextStyle(color: AppColors.danger))),
+              data: (members) {
+                if (members.isEmpty) {
+                  return const Center(
+                    child: Text('Пока пусто',
+                        style: TextStyle(color: AppColors.onGlassMuted)),
+                  );
+                }
+                return ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
+                  itemCount: members.length,
+                  itemBuilder: (_, i) => Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: _MemberTile(member: members[i]),
+                  ),
+                );
+              },
             ),
           ),
-          title: Text(
-            'Участники · ${widget.roomName}',
-            style: const TextStyle(color: AppColors.onGlass, fontSize: 16, fontWeight: FontWeight.w600),
-          ),
-          actions: [
-            if (!widget.isPublic)
-              GlassIconButton(
-                size: 36,
-                icon: const Icon(Icons.person_add_alt_1, color: AppColors.onGlass),
-                onPressed: _inviteByUsername,
-              ),
-            const SizedBox(width: 8),
-          ],
-        ),
-        body: SafeArea(
-          child: async.when(
-            loading: () => const Center(child: GlassProgressIndicator.circular(size: 28)),
-            error: (e, _) => Center(child: Text('$e', style: const TextStyle(color: AppColors.danger))),
-            data: (members) {
-              if (members.isEmpty) {
-                return const Center(
-                  child: Text('Пока пусто', style: TextStyle(color: AppColors.onGlassMuted)),
-                );
-              }
-              return ListView.builder(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
-                itemCount: members.length,
-                itemBuilder: (_, i) => Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: _MemberTile(member: members[i]),
-                ),
-              );
-            },
-          ),
-        ),
         ),
       ),
     );
@@ -246,7 +242,9 @@ class _MemberTile extends StatelessWidget {
                 child: member.avatarUrl == null
                     ? Text(
                         un.isNotEmpty ? un.characters.first.toUpperCase() : '?',
-                        style: const TextStyle(color: AppColors.onGlass, fontWeight: FontWeight.w700),
+                        style: const TextStyle(
+                            color: AppColors.onGlass,
+                            fontWeight: FontWeight.w700),
                       )
                     : null,
               ),
@@ -260,7 +258,8 @@ class _MemberTile extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: const Color(0xFF34D399),
                       shape: BoxShape.circle,
-                      border: Border.all(color: const Color(0xFF1B1546), width: 2),
+                      border: Border.all(
+                          color: const Color(0xFF1B1546), width: 2),
                     ),
                   ),
                 ),
@@ -273,11 +272,13 @@ class _MemberTile extends StatelessWidget {
               children: [
                 Text(
                   dn.isNotEmpty ? dn : un,
-                  style: const TextStyle(color: AppColors.onGlass, fontWeight: FontWeight.w600),
+                  style: const TextStyle(
+                      color: AppColors.onGlass, fontWeight: FontWeight.w600),
                 ),
                 Text(
                   '@$un${member.role.isNotEmpty ? " · ${member.role}" : ""}',
-                  style: const TextStyle(color: AppColors.onGlassDim, fontSize: 12),
+                  style: const TextStyle(
+                      color: AppColors.onGlassDim, fontSize: 12),
                 ),
               ],
             ),
