@@ -9,6 +9,7 @@ import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../api.dart';
 import '../config.dart';
+import '../crypto/mention_tags.dart';
 import '../crypto/room_cipher.dart';
 import '../services/media_picker.dart';
 import '../state.dart';
@@ -22,6 +23,9 @@ import 'chat/chat_row.dart';
 import 'chat/chat_transport.dart';
 import 'chat/message_bubble.dart';
 import 'members.dart';
+
+/// F2: the reaction emoji bar shown in the long-press menu.
+const List<String> _kReactionEmojis = ['👍', '❤️', '😂', '🔥', '😮', '😢'];
 
 const int _kHistoryPageSize = 50;
 const int _kCatchupLimit = 200;
@@ -81,6 +85,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   String? _lastTailId;
   bool _didInitialScroll = false;
 
+  // ---- F1 reply target -----------------------------------------------------
+  CachedMessage? _replyTarget;
+
+  // ---- F4 unread divider ---------------------------------------------------
+  /// Set once on open: id of the first unread message, used to anchor the
+  /// "unread" divider even after we mark messages read.
+  bool _capturedOpenRead = false;
+  String? _firstUnreadId;
+
+  // ---- F7 drafts -----------------------------------------------------------
+  Timer? _draftDebounce;
+  bool _draftRestored = false;
+
+  // ---- F11 voice -----------------------------------------------------------
+  final VoiceRecorder _recorder = VoiceRecorder();
+  bool _recording = false;
+  Duration _recordElapsed = Duration.zero;
+  Timer? _recordTimer;
+
+  // ---- latest cached snapshot (for quote lookup + scroll-to) ---------------
+  List<CachedMessage> _lastList = const [];
+
   // ---- ref-derived state, cached so dispose() / late callbacks don't touch
   // ref after the element is defunct (flutter_riverpod's ref.read checks
   // context.mounted and throws once the element is unmounted).
@@ -97,6 +123,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _muted = widget.muted;
     _currentRoomCtrl = ref.read(currentRoomProvider.notifier);
     _token = ref.read(authProvider)?.token;
+    _selfId = ref.read(authProvider)?.userId;
 
     WidgetsBinding.instance.addObserver(this);
     _scroll.addListener(_onScroll);
@@ -124,6 +151,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     scheduleMicrotask(() {
       if (ctrl.state == roomId) ctrl.state = null;
     });
+    // F7: flush the latest composer state to the draft cache on the way out.
+    _persistDraftNow();
+    _draftDebounce?.cancel();
+    _recordTimer?.cancel();
+    unawaited(_recorder.dispose());
     WidgetsBinding.instance.removeObserver(this);
     _transport?.dispose();
     for (final t in _peerTyping.values) {
@@ -133,6 +165,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
     super.dispose();
+  }
+
+  /// Synchronously kick off a draft write using the controller's current value.
+  /// Safe to call from dispose (uses the cached room id, no ref access).
+  void _persistDraftNow() {
+    final text = _inputCtrl.text;
+    final replyId = _replyTarget?.id;
+    if (text.isEmpty && replyId == null) {
+      unawaited(DraftsCache.clear(widget.roomId));
+    } else {
+      unawaited(DraftsCache.set(widget.roomId, text, replyToId: replyId));
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -174,10 +218,52 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   Future<void> _hydrateAndConnect() async {
     await _restorePendingFromOutbox();
+    await _restoreDraft();
     await _warmRoomKeyCache();
+    _publishMentionTagIfE2e();
     _startTransport();
     unawaited(_runCatchupAndResend());
   }
+
+  /// F7: restore the saved composer text + reply target for this room.
+  Future<void> _restoreDraft() async {
+    if (_draftRestored) return;
+    _draftRestored = true;
+    try {
+      final draft = await DraftsCache.get(widget.roomId);
+      if (draft == null) return;
+      if (draft.text.isNotEmpty) _inputCtrl.text = draft.text;
+      if (draft.replyToId != null) {
+        // Resolve against whatever we have cached; if not present yet the
+        // reply strip simply won't show a snippet until the message loads.
+        final list = await MessagesCache.snapshot(widget.roomId);
+        final found = _findById(list, draft.replyToId!);
+        if (found != null) _replyTarget = found;
+      }
+      _setStateIfMounted();
+    } catch (_) {/* no draft / cache miss */}
+  }
+
+  /// F3: publish our own keyed mention tag once on entering an E2E room so
+  /// other members can @-mention us. Best-effort — silent on failure.
+  void _publishMentionTagIfE2e() {
+    if (!widget.e2e) return;
+    final api = _api;
+    final selfId = _selfId;
+    if (api == null || selfId == null) return;
+    unawaited(() async {
+      try {
+        await MentionTags.publishOwnTag(
+          api,
+          widget.roomId,
+          selfId,
+          fallbackKeyVersion: widget.keyVersion,
+        );
+      } catch (_) {}
+    }());
+  }
+
+  String? _selfId;
 
   Future<void> _restorePendingFromOutbox() async {
     try {
@@ -218,6 +304,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       onEdit: _onWsEdit,
       onDelete: _onWsDelete,
       onTyping: _onWsTyping,
+      onReaction: _onWsReaction,
       onConnectedChanged: (c) => _setStateIfMounted(() => _connected = c),
       onUnauthorized: () => ref.read(authProvider.notifier).forceLogout(),
       onRateLimited: () => _toast('Слишком много сообщений, подожди немного'),
@@ -303,6 +390,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     );
   }
 
+  /// F2: incoming Room-DO reaction frame. `mine` is true when the actor is us.
+  void _onWsReaction(Map<String, dynamic> m) {
+    final msgId = m['message_id']?.toString();
+    final emoji = m['emoji']?.toString();
+    final userId = m['user_id']?.toString() ?? '';
+    if (msgId == null || emoji == null || emoji.isEmpty) return;
+    final mine = userId == _selfId;
+    if (m['type'] == 'reaction_remove') {
+      MessagesCache.applyReactionRemove(widget.roomId, msgId, userId, emoji,
+          mine: mine);
+    } else {
+      MessagesCache.applyReactionAdd(widget.roomId, msgId, userId, emoji,
+          mine: mine);
+    }
+  }
+
   void _onWsTyping(Map<String, dynamic> m) {
     final uid = m['user_id']?.toString();
     final me = ref.read(authProvider)?.userId;
@@ -326,13 +429,63 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   void _send() {
     final t = _inputCtrl.text.trim();
     if (t.isEmpty) return;
-    _sendCore(text: t);
+    unawaited(_sendText(t));
   }
+
+  /// Text send path: resolves @mentions and threads any active reply target
+  /// before handing off to [_sendCore].
+  Future<void> _sendText(String text) async {
+    final replyId = _replyTarget?.id;
+    final mentions = await _resolveMentions(text);
+    _sendCore(
+      text: text,
+      replyToId: replyId,
+      mentions: mentions,
+    );
+  }
+
+  /// F3: extract `@username` tokens, map them to member user_ids, and (for E2E
+  /// rooms) convert those ids to keyed mention tags. Returns the payload list
+  /// to put in the frame, or null when nothing resolves.
+  Future<List<String>?> _resolveMentions(String text) async {
+    final names = _mentionRe
+        .allMatches(text)
+        .map((m) => m.group(1)!.toLowerCase())
+        .toSet();
+    if (names.isEmpty) return null;
+    final members = await MembersCache.snapshot(widget.roomId);
+    final ids = <String>[];
+    for (final m in members) {
+      if (names.contains(m.username.toLowerCase())) ids.add(m.userId);
+    }
+    if (ids.isEmpty) return null;
+    if (!widget.e2e) return ids;
+    // E2E: substitute keyed tags for the user_ids. Skip silently if the room
+    // key isn't available.
+    final api = _api;
+    if (api == null) return null;
+    try {
+      final tags = await MentionTags.tagsForRoom(
+        api,
+        widget.roomId,
+        ids,
+        fallbackKeyVersion: widget.keyVersion,
+      );
+      if (tags == null) return null;
+      return ids.map((id) => tags[id]).whereType<String>().toList();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static final RegExp _mentionRe = RegExp(r'@([A-Za-z0-9_]+)');
 
   void _sendCore({
     String text = '',
     String? attachmentId,
     CachedAttachment? attPreview,
+    String? replyToId,
+    List<String>? mentions,
   }) {
     final clientId = uuidV4();
     final createdAt = DateTime.now().millisecondsSinceEpoch;
@@ -341,8 +494,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       text: text,
       createdAt: createdAt,
       attachment: attPreview,
+      replyToId: replyToId,
     );
     if (text.isNotEmpty) _inputCtrl.clear();
+    // Clear the reply target + draft once the send is committed.
+    _replyTarget = null;
+    unawaited(DraftsCache.clear(widget.roomId));
     setState(() {});
     _scrollToEnd();
     Outbox.add(
@@ -352,7 +509,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       createdAt: createdAt,
     );
     _transport?.send(
-        clientId: clientId, text: text, attachmentId: attachmentId);
+      clientId: clientId,
+      text: text,
+      attachmentId: attachmentId,
+      replyToId: replyToId,
+      mentions: mentions,
+    );
   }
 
   void _resendPending() {
@@ -360,11 +522,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (t == null) return;
     for (final p in _pending.values) {
       t.send(
-          clientId: p.clientId, text: p.text, attachmentId: p.attachment?.id);
+        clientId: p.clientId,
+        text: p.text,
+        attachmentId: p.attachment?.id,
+        replyToId: p.replyToId,
+      );
     }
   }
 
-  void _onTextChanged(String _) => _transport?.notifyTyping();
+  void _onTextChanged(String _) {
+    _transport?.notifyTyping();
+    // F7: debounce draft persistence so we don't hammer SQLite per keystroke.
+    _draftDebounce?.cancel();
+    _draftDebounce = Timer(const Duration(milliseconds: 600), _persistDraftNow);
+  }
 
   // ---------------------------------------------------------------------------
   // Image picking + upload
@@ -386,6 +557,69 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _toast('Нет ключа комнаты — загрузка невозможна');
     } catch (e) {
       _toast('$e');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // F11 voice messages
+  // ---------------------------------------------------------------------------
+
+  Future<void> _startRecording() async {
+    if (_recording) return;
+    final ok = await _recorder.start();
+    if (!ok) {
+      _toast('Нет доступа к микрофону');
+      return;
+    }
+    final started = DateTime.now();
+    _recordTimer?.cancel();
+    _recordTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
+      _setStateIfMounted(
+          () => _recordElapsed = DateTime.now().difference(started));
+    });
+    _setStateIfMounted(() {
+      _recording = true;
+      _recordElapsed = Duration.zero;
+    });
+  }
+
+  Future<void> _cancelRecording() async {
+    _recordTimer?.cancel();
+    await _recorder.cancel();
+    _setStateIfMounted(() {
+      _recording = false;
+      _recordElapsed = Duration.zero;
+    });
+  }
+
+  Future<void> _stopAndSendRecording() async {
+    _recordTimer?.cancel();
+    final wasRecording = _recording;
+    _setStateIfMounted(() => _recording = false);
+    if (!wasRecording) return;
+    final clip = await _recorder.stop();
+    if (clip == null) return;
+    final api = _api;
+    if (api == null) return;
+    final picker = MediaPicker(api);
+    try {
+      final media = widget.e2e
+          ? await picker.uploadVoiceEncrypted(
+              clip.bytes,
+              cipher: _cipher!,
+              durationMs: clip.durationMs,
+            )
+          : await picker.uploadVoicePlain(
+              clip.bytes,
+              durationMs: clip.durationMs,
+            );
+      _sendCore(attachmentId: media.attachmentId, attPreview: media.preview);
+    } on RoomKeyUnavailable {
+      _toast('Нет ключа комнаты — отправка голосового невозможна');
+    } catch (e) {
+      _toast('$e');
+    } finally {
+      _setStateIfMounted(() => _recordElapsed = Duration.zero);
     }
   }
 
@@ -473,6 +707,203 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       await api.deleteMessage(widget.roomId, m.id);
       await MessagesCache.applyDelete(
           widget.roomId, m.id, DateTime.now().millisecondsSinceEpoch);
+    } catch (e) {
+      _toast('$e');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // F18 forward
+  // ---------------------------------------------------------------------------
+
+  Future<void> _forwardMsg(CachedMessage m) async {
+    final api = _api;
+    if (api == null) return;
+    final rooms = await RoomsCache.snapshot();
+    // Only rooms we're a member of, excluding the current one.
+    final targets = rooms
+        .where((r) => r.isMember && r.id != widget.roomId)
+        .toList(growable: false);
+    if (!mounted) return;
+    if (targets.isEmpty) {
+      _toast('Нет комнат для пересылки');
+      return;
+    }
+    final target = await _pickForwardTarget(targets);
+    if (target == null) return;
+    await _doForward(api, m, target);
+  }
+
+  Future<CachedRoom?> _pickForwardTarget(List<CachedRoom> rooms) {
+    return showModalBottomSheet<CachedRoom>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: GlassPanel(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 6),
+                  child: Text('Переслать в…',
+                      style: TextStyle(
+                          color: AppColors.onGlass,
+                          fontWeight: FontWeight.w700)),
+                ),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final r in rooms)
+                        GlassListTile.standalone(
+                          leading: Icon(
+                            r.e2e ? Icons.lock_outline : Icons.tag,
+                            color: AppColors.onGlass,
+                          ),
+                          title: Text(r.name,
+                              style:
+                                  const TextStyle(color: AppColors.onGlass)),
+                          onTap: () => Navigator.pop(ctx, r),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _doForward(
+      Api api, CachedMessage m, CachedRoom target) async {
+    final clientId = uuidV4();
+    final hasAttachment = m.attachment != null;
+    try {
+      if (target.e2e) {
+        // Re-encrypt under the TARGET room key. We have plaintext for shown
+        // E2E messages (and for plain sources). Attachments can't be
+        // re-uploaded yet — forward text only.
+        if (hasAttachment && m.text.isEmpty) {
+          _toast('Вложения пока нельзя пересылать в зашифрованные чаты');
+          return;
+        }
+        if (hasAttachment) {
+          _toast('Вложение не будет переслано в зашифрованный чат');
+        }
+        final targetCipher = RoomCipher(
+          api: api,
+          roomId: target.id,
+          fallbackVersion: target.keyVersion,
+        );
+        final enc = await targetCipher.encryptMessage(m.text);
+        await api.forwardMessage(
+          target.id,
+          clientId: clientId,
+          sourceRoomId: widget.roomId,
+          sourceMsgId: m.id,
+          ciphertext: enc.cipher.ctB64,
+          iv: enc.cipher.ivB64,
+          keyVersion: enc.keyVersion,
+        );
+      } else {
+        // Plaintext target. Pass text through; plain->plain may forward the
+        // attachment id as well.
+        await api.forwardMessage(
+          target.id,
+          clientId: clientId,
+          sourceRoomId: widget.roomId,
+          sourceMsgId: m.id,
+          text: m.text.isEmpty ? null : m.text,
+          attachmentId:
+              (!widget.e2e && hasAttachment) ? m.attachment!.id : null,
+        );
+      }
+      _toast('Переслано в ${target.name}');
+    } on RoomKeyUnavailable {
+      _toast('Нет ключа комнаты назначения');
+    } catch (e) {
+      _toast('$e');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // F1 reply helpers
+  // ---------------------------------------------------------------------------
+
+  void _setReplyTarget(CachedMessage m) {
+    _setStateIfMounted(() => _replyTarget = m);
+    _persistDraftNow();
+  }
+
+  void _clearReply() {
+    _setStateIfMounted(() => _replyTarget = null);
+    _persistDraftNow();
+  }
+
+  ReplyPreview? _replyPreview() {
+    final m = _replyTarget;
+    if (m == null) return null;
+    final snippet = m.deletedAt != null
+        ? 'сообщение удалено'
+        : (m.text.isNotEmpty
+            ? m.text
+            : (m.attachment != null ? 'вложение' : '…'));
+    return ReplyPreview(
+      sender: m.username.isNotEmpty ? m.username : 'сообщение',
+      snippet: snippet,
+    );
+  }
+
+  CachedMessage? _findById(List<CachedMessage> list, String id) {
+    for (final m in list) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
+
+  /// Scroll the list so the source message of a quote becomes visible. The
+  /// list is `reverse: true`, so we translate the message index into a scroll
+  /// offset estimate; close enough for a "jump near it" behaviour.
+  void _scrollToMessage(String id) {
+    final idx = _lastList.indexWhere((m) => m.id == id);
+    if (idx < 0 || !_scroll.hasClients) return;
+    // reverse list: newest at offset 0. Items after [idx] sit "below" it.
+    final fromEnd = _lastList.length - 1 - idx;
+    final target = (fromEnd * 64.0).clamp(0.0, _scroll.position.maxScrollExtent);
+    _scroll.animateTo(
+      target,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeInOut,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // F2 reactions
+  // ---------------------------------------------------------------------------
+
+  Future<void> _toggleReaction(CachedMessage m, String emoji) async {
+    final api = _api;
+    if (api == null) return;
+    final selfId = _selfId ?? '';
+    final existing =
+        m.reactions.where((r) => r.emoji == emoji).cast<MessageReaction?>();
+    final mineNow = existing.isNotEmpty && (existing.first?.mine ?? false);
+    try {
+      if (mineNow) {
+        await MessagesCache.applyReactionRemove(
+            widget.roomId, m.id, selfId, emoji, mine: true);
+        await api.removeReaction(widget.roomId, m.id, emoji);
+      } else {
+        await MessagesCache.applyReactionAdd(
+            widget.roomId, m.id, selfId, emoji, mine: true);
+        await api.addReaction(widget.roomId, m.id, emoji);
+      }
     } catch (e) {
       _toast('$e');
     }
@@ -595,9 +1026,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final myUsername = ref.watch(authProvider)?.username ?? '';
     final cachedAsync = ref.watch(messagesProvider(widget.roomId));
     final cached = cachedAsync.valueOrNull ?? const <CachedMessage>[];
+    _lastList = cached;
 
     _wireMessageListener();
     _maybeInitialScroll(cached);
+    _captureOpenRead();
 
     final rows = _buildRows(cached, me, myUsername);
 
@@ -640,6 +1073,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 onChanged: _onTextChanged,
                 onSend: _send,
                 onPickImage: _pickAndSendImage,
+                replyPreview: _replyPreview(),
+                onCancelReply: _clearReply,
+                onStartRecording: _startRecording,
+                onStopRecording: _stopAndSendRecording,
+                onCancelRecording: _cancelRecording,
+                recording: _recording,
+                recordElapsed: _recordElapsed,
               ),
             ],
           ),
@@ -673,6 +1113,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         }
       },
     );
+  }
+
+  /// F4: snapshot the room's unread count once (on first build with data) so
+  /// we can anchor an "unread" divider at the first unread message. Marking
+  /// messages read afterwards won't move the divider.
+  void _captureOpenRead() {
+    if (_capturedOpenRead || _lastList.isEmpty) return;
+    _capturedOpenRead = true;
+    unawaited(() async {
+      try {
+        final rooms = await RoomsCache.snapshot();
+        final room = rooms.where((r) => r.id == widget.roomId);
+        final unread = room.isEmpty ? 0 : room.first.unread;
+        if (unread <= 0) return;
+        final list = _lastList;
+        final firstId = unread >= list.length
+            ? list.first.id
+            : list[list.length - unread].id;
+        _setStateIfMounted(() => _firstUnreadId = firstId);
+      } catch (_) {}
+    }());
   }
 
   void _maybeInitialScroll(List<CachedMessage> cached) {
@@ -759,20 +1220,54 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         itemBuilder: (_, i) {
           final r = rows[rows.length - 1 - i];
           final mine = r.userId == me;
-          return MessageBubble(
+          final isServer = r.kind == ChatRowKind.server;
+          final bubble = MessageBubble(
             row: r,
             mine: mine,
             roomId: widget.roomId,
             e2e: widget.e2e,
             token: _token ?? '',
-            onLongPress: (r.kind == ChatRowKind.server && mine && !r.deleted)
-                ? () => _showMsgMenu(r.serverMsg!)
+            onLongPress:
+                (isServer && !r.deleted) ? () => _showMsgMenu(r.serverMsg!) : null,
+            onReply: (isServer && !r.deleted)
+                ? () => _setReplyTarget(r.serverMsg!)
+                : null,
+            resolveQuoted: (id) => _findById(_lastList, id),
+            onTapQuote: _scrollToMessage,
+            onToggleReaction: (isServer && !r.deleted)
+                ? (emoji) => _toggleReaction(r.serverMsg!, emoji)
                 : null,
           );
+          // F4: unread divider sits just above the first unread message.
+          if (isServer && r.messageId == _firstUnreadId) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [_unreadDivider(), bubble],
+            );
+          }
+          return bubble;
         },
       );
 
+  Widget _unreadDivider() => const Padding(
+        padding: EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          children: [
+            Expanded(child: Divider(color: Color(0x33FFFFFF), height: 1)),
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8),
+              child: Text(
+                'непрочитанные',
+                style: TextStyle(fontSize: 11, color: AppColors.onGlassMuted),
+              ),
+            ),
+            Expanded(child: Divider(color: Color(0x33FFFFFF), height: 1)),
+          ],
+        ),
+      );
+
   void _showMsgMenu(CachedMessage m) {
+    final mine = m.userId == (_selfId ?? '');
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -784,10 +1279,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (m.text.isNotEmpty)
+                // F2: quick-reaction emoji bar.
+                _reactionBar(ctx, m),
+                const Divider(color: Color(0x22FFFFFF), height: 1),
+                // F1: reply.
+                GlassListTile.standalone(
+                  leading: const Icon(Icons.reply, color: AppColors.onGlass),
+                  title: const Text('Ответить',
+                      style: TextStyle(color: AppColors.onGlass)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _setReplyTarget(m);
+                  },
+                ),
+                // F18: forward.
+                GlassListTile.standalone(
+                  leading:
+                      const Icon(Icons.forward, color: AppColors.onGlass),
+                  title: const Text('Переслать',
+                      style: TextStyle(color: AppColors.onGlass)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _forwardMsg(m);
+                  },
+                ),
+                if (mine && m.text.isNotEmpty)
                   GlassListTile.standalone(
-                    leading:
-                        const Icon(Icons.edit_outlined, color: AppColors.onGlass),
+                    leading: const Icon(Icons.edit_outlined,
+                        color: AppColors.onGlass),
                     title: const Text('Редактировать',
                         style: TextStyle(color: AppColors.onGlass)),
                     onTap: () {
@@ -795,16 +1314,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                       _editMsg(m);
                     },
                   ),
-                GlassListTile.standalone(
-                  leading: const Icon(Icons.delete_outline,
-                      color: AppColors.danger),
-                  title: const Text('Удалить',
-                      style: TextStyle(color: AppColors.danger)),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _deleteMsg(m);
-                  },
-                ),
+                if (mine)
+                  GlassListTile.standalone(
+                    leading: const Icon(Icons.delete_outline,
+                        color: AppColors.danger),
+                    title: const Text('Удалить',
+                        style: TextStyle(color: AppColors.danger)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _deleteMsg(m);
+                    },
+                  ),
               ],
             ),
           ),
@@ -812,4 +1332,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       ),
     );
   }
+
+  Widget _reactionBar(BuildContext ctx, CachedMessage m) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            for (final emoji in _kReactionEmojis)
+              GestureDetector(
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _toggleReaction(m, emoji);
+                },
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Text(emoji, style: const TextStyle(fontSize: 24)),
+                ),
+              ),
+          ],
+        ),
+      );
 }

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_blurhash/flutter_blurhash.dart';
 
 import '../../api.dart';
 import '../../config.dart';
@@ -140,7 +141,9 @@ class _AttachmentImageState extends State<AttachmentImage> {
   Widget build(BuildContext context) {
     if (_needsDecrypt) {
       if (_failed) return const _BrokenThumb();
-      if (_bytes == null) return const _LoadingThumb();
+      if (_bytes == null) {
+        return _LoadingThumb(blurhash: widget.attachment.blurhash);
+      }
       return Image.memory(
         _bytes!,
         width: _kThumbW,
@@ -153,6 +156,7 @@ class _AttachmentImageState extends State<AttachmentImage> {
     return _PlainNetworkThumb(
       attachment: widget.attachment,
       token: widget.token,
+      blurhash: widget.attachment.blurhash,
     );
   }
 }
@@ -162,10 +166,12 @@ class _AttachmentImageState extends State<AttachmentImage> {
 class _PlainNetworkThumb extends StatelessWidget {
   final CachedAttachment attachment;
   final String token;
+  final String? blurhash;
 
   const _PlainNetworkThumb({
     required this.attachment,
     required this.token,
+    this.blurhash,
   });
 
   @override
@@ -179,7 +185,7 @@ class _PlainNetworkThumb extends StatelessWidget {
       headers: source.headers,
       gaplessPlayback: true,
       loadingBuilder: (_, child, progress) =>
-          progress == null ? child : const _LoadingThumb(),
+          progress == null ? child : _LoadingThumb(blurhash: blurhash),
       errorBuilder: (_, __, ___) => const _BrokenThumb(),
     );
   }
@@ -202,19 +208,45 @@ class _PlainNetworkThumb extends StatelessWidget {
 }
 
 class _LoadingThumb extends StatelessWidget {
-  const _LoadingThumb();
+  /// F10: when present, render the BlurHash placeholder under a subtle spinner
+  /// so the image area shows a recognizable blurred preview while loading.
+  final String? blurhash;
+  const _LoadingThumb({this.blurhash});
+
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) {
+    final hash = blurhash;
+    if (hash != null && hash.isNotEmpty) {
+      return SizedBox(
         width: _kThumbW,
         height: _kThumbH,
-        alignment: Alignment.center,
-        color: const Color(0x22000000),
-        child: const SizedBox(
-          width: 22,
-          height: 22,
-          child: CircularProgressIndicator(strokeWidth: 2),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            BlurHash(hash: hash, imageFit: BoxFit.cover),
+            const Center(
+              child: SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          ],
         ),
       );
+    }
+    return Container(
+      width: _kThumbW,
+      height: _kThumbH,
+      alignment: Alignment.center,
+      color: const Color(0x22000000),
+      child: const SizedBox(
+        width: 22,
+        height: 22,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      ),
+    );
+  }
 }
 
 class _BrokenThumb extends StatelessWidget {

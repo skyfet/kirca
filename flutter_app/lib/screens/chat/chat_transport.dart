@@ -43,6 +43,10 @@ class ChatTransport {
   final void Function(Map<String, dynamic> frame) onTyping;
   final void Function(bool connected) onConnectedChanged;
 
+  /// F2: Room-DO reaction frames (`reaction_add` / `reaction_remove`). Optional
+  /// so existing tests that don't care about reactions can omit it.
+  final void Function(Map<String, dynamic> frame)? onReaction;
+
   /// Server told us the token is dead (close code 1008). State should drop
   /// the screen / invoke its auth-provider logout.
   final void Function() onUnauthorized;
@@ -64,6 +68,7 @@ class ChatTransport {
     required this.onUnauthorized,
     required this.onRateLimited,
     required this.onMissingRoomKey,
+    this.onReaction,
   });
 
   // ---- internal state ------------------------------------------------------
@@ -114,16 +119,32 @@ class ChatTransport {
 
   /// Send a message. Picks plain vs E2E based on whether a [cipher] was
   /// configured.  Both forms accept an optional [attachmentId].
+  /// [replyToId] threads the message under a quoted source (F1). [mentions]
+  /// carries the already-resolved mention payload (plain rooms: user_ids; E2E
+  /// rooms: keyed tags) — the caller decides the encoding (F3).
   void send({
     required String clientId,
     required String text,
     String? attachmentId,
+    String? replyToId,
+    List<String>? mentions,
   }) {
     if (cipher == null) {
-      _sendPlain(clientId: clientId, text: text, attachmentId: attachmentId);
+      _sendPlain(
+        clientId: clientId,
+        text: text,
+        attachmentId: attachmentId,
+        replyToId: replyToId,
+        mentions: mentions,
+      );
     } else {
       unawaited(_sendEncrypted(
-          clientId: clientId, text: text, attachmentId: attachmentId));
+        clientId: clientId,
+        text: text,
+        attachmentId: attachmentId,
+        replyToId: replyToId,
+        mentions: mentions,
+      ));
     }
   }
 
@@ -131,12 +152,16 @@ class ChatTransport {
     required String clientId,
     required String text,
     String? attachmentId,
+    String? replyToId,
+    List<String>? mentions,
   }) {
     _writeFrame({
       'type': 'msg',
       'client_id': clientId,
       if (text.isNotEmpty) 'text': text,
       if (attachmentId != null) 'attachment_id': attachmentId,
+      if (replyToId != null) 'reply_to_id': replyToId,
+      if (mentions != null && mentions.isNotEmpty) 'mentions': mentions,
     });
   }
 
@@ -144,6 +169,8 @@ class ChatTransport {
     required String clientId,
     required String text,
     String? attachmentId,
+    String? replyToId,
+    List<String>? mentions,
   }) async {
     try {
       final enc = await cipher!.encryptMessage(text);
@@ -154,6 +181,8 @@ class ChatTransport {
         'iv': enc.cipher.ivB64,
         'key_version': enc.keyVersion,
         if (attachmentId != null) 'attachment_id': attachmentId,
+        if (replyToId != null) 'reply_to_id': replyToId,
+        if (mentions != null && mentions.isNotEmpty) 'mentions': mentions,
       });
     } on RoomKeyUnavailable {
       onMissingRoomKey();
@@ -202,6 +231,10 @@ class ChatTransport {
           break;
         case 'typing':
           onTyping(m);
+          break;
+        case 'reaction_add':
+        case 'reaction_remove':
+          onReaction?.call(m);
           break;
         case 'error':
           if (m['code']?.toString() == 'rate_limited') onRateLimited();

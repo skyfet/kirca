@@ -3,11 +3,88 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 
 import '../api.dart';
 import '../crypto/room_cipher.dart';
 import '../storage/cache.dart';
 import '../util/mime.dart';
+import '../util/uuid.dart';
+
+/// MIME we upload recorded voice notes as (AAC in an MPEG-4/m4a container).
+const String kVoiceMime = 'audio/mp4';
+
+/// Result of stopping a [VoiceRecorder]: the recorded bytes plus how long the
+/// clip ran (measured wall-clock, good enough for the bubble label).
+class RecordedVoice {
+  final Uint8List bytes;
+  final int durationMs;
+  const RecordedVoice({required this.bytes, required this.durationMs});
+}
+
+/// F11: thin wrapper over the `record` package for press-and-hold voice notes.
+/// Records AAC/m4a to a temp file, then hands the bytes back so the chat screen
+/// can push them through the existing attachment upload pipeline.
+class VoiceRecorder {
+  final AudioRecorder _rec = AudioRecorder();
+  String? _path;
+  DateTime? _startedAt;
+
+  /// True once [start] has begun a recording and before [stop]/[cancel].
+  bool get isRecording => _startedAt != null;
+
+  /// Ask for the mic permission and begin recording. Returns false (and
+  /// records nothing) when permission is denied.
+  Future<bool> start() async {
+    if (!await _rec.hasPermission()) return false;
+    final dir = await getTemporaryDirectory();
+    final path = '${dir.path}/voice_${uuidV4()}.m4a';
+    await _rec.start(
+      const RecordConfig(encoder: AudioEncoder.aacLc, numChannels: 1),
+      path: path,
+    );
+    _path = path;
+    _startedAt = DateTime.now();
+    return true;
+  }
+
+  /// Stop recording and return the captured clip, or null if nothing was
+  /// recorded / the file is missing.
+  Future<RecordedVoice?> stop() async {
+    final started = _startedAt;
+    _startedAt = null;
+    if (started == null) return null;
+    final outPath = await _rec.stop();
+    final path = outPath ?? _path;
+    _path = null;
+    if (path == null) return null;
+    final f = File(path);
+    if (!await f.exists()) return null;
+    final bytes = await f.readAsBytes();
+    final durationMs = DateTime.now().difference(started).inMilliseconds;
+    try {
+      await f.delete();
+    } catch (_) {/* best-effort temp cleanup */}
+    if (bytes.isEmpty) return null;
+    return RecordedVoice(bytes: bytes, durationMs: durationMs);
+  }
+
+  /// Abort the current recording, discarding any captured audio.
+  Future<void> cancel() async {
+    _startedAt = null;
+    _path = null;
+    try {
+      await _rec.cancel();
+    } catch (_) {}
+  }
+
+  Future<void> dispose() async {
+    try {
+      await _rec.dispose();
+    } catch (_) {}
+  }
+}
 
 /// Thrown by [MediaPicker] when the user picks a file whose extension we
 /// don't accept (server-side whitelist). Surfaces a clean error so the UI
@@ -101,6 +178,72 @@ class MediaPicker {
         wrappedKeyIv: base64Encode(enc.cipher.wrappedKeyIv),
         iv: base64Encode(enc.cipher.iv),
         keyVersion: enc.keyVersion,
+      ),
+    );
+  }
+
+  /// Upload an already-recorded voice note (plain mode). [durationMs] is
+  /// carried through to the bubble so it can show the clip length immediately.
+  Future<UploadedMedia> uploadVoicePlain(
+    Uint8List bytes, {
+    required int durationMs,
+  }) async {
+    final reserved = await api.reserveUpload(mime: kVoiceMime, size: bytes.length);
+    final ids = _idsFromReserve(reserved);
+    if (ids == null) {
+      throw const FormatException('upload reservation missing url/id');
+    }
+    await api.uploadBytes(ids.uploadUrl, bytes, kVoiceMime);
+    return UploadedMedia(
+      attachmentId: ids.attachmentId,
+      preview: CachedAttachment(
+        id: ids.attachmentId,
+        url: reserved['public_url']?.toString(),
+        mime: kVoiceMime,
+        durationMs: durationMs,
+      ),
+    );
+  }
+
+  /// Upload an already-recorded voice note for an E2E room: encrypt the audio
+  /// bytes under the room key (same blob path as images) and carry the
+  /// duration in the bubble preview (never sent to the server in the clear).
+  Future<UploadedMedia> uploadVoiceEncrypted(
+    Uint8List bytes, {
+    required RoomCipher cipher,
+    required int durationMs,
+  }) async {
+    final enc = await cipher.encryptAttachment(bytes);
+    final reserved = await api.reserveUpload(
+      mime: 'application/octet-stream',
+      size: enc.cipher.ciphertext.length,
+      e2e: true,
+      roomId: cipher.roomId,
+      iv: base64Encode(enc.cipher.iv),
+      wrappedKey: base64Encode(enc.cipher.wrappedKey),
+      wrappedKeyIv: base64Encode(enc.cipher.wrappedKeyIv),
+      keyVersion: enc.keyVersion,
+    );
+    final ids = _idsFromReserve(reserved);
+    if (ids == null) {
+      throw const FormatException('upload reservation missing url/id');
+    }
+    await api.uploadBytes(
+      ids.uploadUrl,
+      enc.cipher.ciphertext,
+      'application/octet-stream',
+    );
+    return UploadedMedia(
+      attachmentId: ids.attachmentId,
+      preview: CachedAttachment(
+        id: ids.attachmentId,
+        url: reserved['public_url']?.toString(),
+        mime: kVoiceMime,
+        wrappedKey: base64Encode(enc.cipher.wrappedKey),
+        wrappedKeyIv: base64Encode(enc.cipher.wrappedKeyIv),
+        iv: base64Encode(enc.cipher.iv),
+        keyVersion: enc.keyVersion,
+        durationMs: durationMs,
       ),
     );
   }
