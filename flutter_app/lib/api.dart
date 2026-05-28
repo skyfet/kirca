@@ -227,12 +227,137 @@ class Api {
   }
 
   Future<void> setMuted(String roomId, bool muted) async {
+    // Delegate to the v5 membership endpoint: muted -> muted_until=0 (forever),
+    // unmuted -> muted_until=null. Kept for existing callers.
+    await patchMembership(roomId, mutedUntil: muted ? 0 : null, clearMute: !muted);
+  }
+
+  /// Patch per-room membership flags. Sends only the fields explicitly passed
+  /// so callers can toggle one flag without clobbering the others.
+  ///
+  /// muted_until semantics: null = unmute, 0 = mute forever, >0 = epoch-ms.
+  /// Because `null` is also "field not provided", pass [clearMute] = true to
+  /// force an explicit `muted_until: null` (unmute) in the body.
+  Future<Map<String, dynamic>> patchMembership(
+    String roomId, {
+    int? mutedUntil,
+    bool clearMute = false,
+    bool? pinned,
+    bool? archived,
+  }) async {
+    final body = <String, dynamic>{};
+    if (clearMute) {
+      body['muted_until'] = null;
+    } else if (mutedUntil != null) {
+      body['muted_until'] = mutedUntil;
+    }
+    if (pinned != null) body['pinned'] = pinned;
+    if (archived != null) body['archived'] = archived;
     final r = await http.patch(
       Uri.parse('${Config.apiBase}/rooms/$roomId/membership'),
       headers: _headers,
-      body: jsonEncode({'muted': muted}),
+      body: jsonEncode(body),
+    );
+    return _decode(r);
+  }
+
+  // ---- reactions ----
+  Future<void> addReaction(String roomId, String msgId, String emoji) async {
+    final r = await http.put(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/messages/$msgId/reactions'),
+      headers: _headers,
+      body: jsonEncode({'emoji': emoji}),
+    );
+    if (r.statusCode != 204) _decode(r);
+  }
+
+  Future<void> removeReaction(String roomId, String msgId, String emoji) async {
+    final r = await http.delete(
+      Uri.parse(
+        '${Config.apiBase}/rooms/$roomId/messages/$msgId/reactions/'
+        '${Uri.encodeComponent(emoji)}',
+      ),
+      headers: _headers,
+    );
+    if (r.statusCode != 204) _decode(r);
+  }
+
+  // ---- forward ----
+  /// Forward a message into [roomId] (the target room). Pass plaintext [text]
+  /// for plain rooms, or [ciphertext]/[iv]/[keyVersion] for an E2E target.
+  /// Returns the created `{message}`.
+  Future<Map<String, dynamic>> forwardMessage(
+    String roomId, {
+    required String clientId,
+    required String sourceRoomId,
+    required String sourceMsgId,
+    String? text,
+    String? ciphertext,
+    String? iv,
+    int? keyVersion,
+    String? attachmentId,
+  }) async {
+    final body = <String, dynamic>{
+      'client_id': clientId,
+      'source_room_id': sourceRoomId,
+      'source_msg_id': sourceMsgId,
+      if (text != null) 'text': text,
+      if (ciphertext != null) 'ciphertext': ciphertext,
+      if (iv != null) 'iv': iv,
+      if (keyVersion != null) 'key_version': keyVersion,
+      if (attachmentId != null) 'attachment_id': attachmentId,
+    };
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/forward'),
+      headers: _headers,
+      body: jsonEncode(body),
+    );
+    return _decode(r);
+  }
+
+  // ---- blocks ----
+  Future<Map<String, dynamic>> addBlock({String? userId, String? username}) async {
+    final r = await http.post(
+      Uri.parse('${Config.apiBase}/blocks'),
+      headers: _headers,
+      body: jsonEncode({
+        if (userId != null) 'user_id': userId,
+        if (username != null) 'username': username,
+      }),
+    );
+    return _decode(r);
+  }
+
+  Future<void> removeBlock(String userId) async {
+    final r = await http.delete(
+      Uri.parse('${Config.apiBase}/blocks/$userId'),
+      headers: _headers,
+    );
+    if (r.statusCode != 204) _decode(r);
+  }
+
+  Future<List<dynamic>> listBlocks() async {
+    final r = await http.get(Uri.parse('${Config.apiBase}/blocks'), headers: _headers);
+    return (_decode(r))['blocks'] as List<dynamic>;
+  }
+
+  // ---- mention tag (E2E) ----
+  Future<void> publishMentionTag(String roomId, String tag) async {
+    final r = await http.put(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/mention-tag'),
+      headers: _headers,
+      body: jsonEncode({'tag': tag}),
     );
     _decode(r);
+  }
+
+  // ---- single message (used by iOS NSE; exposed for completeness) ----
+  Future<Map<String, dynamic>> getMessage(String roomId, String msgId) async {
+    final r = await http.get(
+      Uri.parse('${Config.apiBase}/rooms/$roomId/messages/$msgId'),
+      headers: _headers,
+    );
+    return _decode(r);
   }
 
   Future<void> leaveRoom(String roomId) async {
