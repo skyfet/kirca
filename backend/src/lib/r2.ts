@@ -27,6 +27,11 @@ export function extFromMime(mime: string): string {
   if (m === "image/webp") return ".webp";
   if (m === "image/gif") return ".gif";
   if (m === "image/heic") return ".heic";
+  if (m === "audio/mp4" || m === "audio/m4a") return ".m4a";
+  if (m === "audio/aac") return ".aac";
+  if (m === "audio/ogg") return ".ogg";
+  if (m === "audio/mpeg") return ".mp3";
+  if (m === "audio/webm") return ".webm";
   return "";
 }
 
@@ -42,4 +47,13 @@ export const ALLOWED_IMAGE_MIMES = new Set([
   "image/webp",
   "image/gif",
   "image/heic",
+]);
+
+export const ALLOWED_AUDIO_MIMES = new Set([
+  "audio/mp4",
+  "audio/aac",
+  "audio/ogg",
+  "audio/mpeg",
+  "audio/m4a",
+  "audio/webm",
 ]);

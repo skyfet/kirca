@@ -1,5 +1,6 @@
 import { getUser, isRoomAccessible, requireAuth, uuid } from "../lib/middleware";
 import {
+  ALLOWED_AUDIO_MIMES,
   ALLOWED_IMAGE_MIMES,
   attachmentKey,
   publicUrl,
@@ -65,8 +66,11 @@ uploadRoutes.openapi(reserveUploadRoute, async (c) => {
       .bind(body.room_id)
       .first<{ e2e: number }>();
     if (room?.e2e !== 1) return c.json({ error: "room is not e2e" }, 403);
-  } else if (!ALLOWED_IMAGE_MIMES.has(body.mime.toLowerCase())) {
-    return c.json({ error: "unsupported mime" }, 415);
+  } else {
+    const m = body.mime.toLowerCase();
+    if (!ALLOWED_IMAGE_MIMES.has(m) && !ALLOWED_AUDIO_MIMES.has(m)) {
+      return c.json({ error: "unsupported mime" }, 415);
+    }
   }
 
   const id = uuid();
@@ -79,8 +83,9 @@ uploadRoutes.openapi(reserveUploadRoute, async (c) => {
     .prepare(
       `INSERT INTO attachments
          (id, user_id, r2_key, mime, size, width, height, created_at,
+          duration_ms, blurhash,
           wrapped_key, wrapped_key_iv, iv, key_version, room_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -91,6 +96,8 @@ uploadRoutes.openapi(reserveUploadRoute, async (c) => {
       body.width ?? null,
       body.height ?? null,
       now,
+      e2e ? null : (body.duration_ms ?? null),
+      e2e ? null : (body.blurhash ?? null),
       e2e ? body.wrapped_key! : null,
       e2e ? body.wrapped_key_iv! : null,
       e2e ? body.iv! : null,
