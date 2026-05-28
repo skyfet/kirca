@@ -29,10 +29,25 @@ type StoredMessage = {
   ciphertext: string | null;
   iv: string | null;
   key_version: number | null;
+  reply_to_id: string | null;
+  mentions: string | null; // JSON-encoded array, or null
+  forwarded_from_room_id: string | null;
+  forwarded_from_msg_id: string | null;
+  forwarded_from_username: string | null;
 };
 
 const WS_RL_LIMIT = 10;
 const WS_RL_WINDOW_MS = 5000;
+
+/** Decode the stored mentions JSON back into a string array (or null). */
+function decodeMentions(raw: string | null): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.filter((m) => typeof m === "string");
+  } catch { /* */ }
+  return null;
+}
 
 /**
  * Одна Durable Object на одну комнату.
@@ -117,6 +132,10 @@ export class Room extends DurableObject<Env> {
       ciphertext?: string;
       iv?: string;
       key_version?: number;
+      reply_to_id?: string;
+      mentions?: string[];
+      forwarded_from_room_id?: string;
+      forwarded_from_msg_id?: string;
     };
     try {
       msg = JSON.parse(raw);
@@ -169,10 +188,37 @@ export class Room extends DurableObject<Env> {
         ? msg.client_id.slice(0, 64)
         : null;
 
+    // F1 reply, F3 mentions, F18 forward provenance.
+    const replyToId =
+      typeof msg.reply_to_id === "string" && msg.reply_to_id.length > 0
+        ? msg.reply_to_id.slice(0, 64)
+        : null;
+    const mentions =
+      Array.isArray(msg.mentions) && msg.mentions.length > 0
+        ? msg.mentions.filter((m) => typeof m === "string" && m.length > 0).slice(0, 64)
+        : null;
+    const mentionsJson = mentions && mentions.length > 0 ? JSON.stringify(mentions) : null;
+    const fwdRoomId =
+      typeof msg.forwarded_from_room_id === "string" && msg.forwarded_from_room_id.length > 0
+        ? msg.forwarded_from_room_id.slice(0, 64)
+        : null;
+    const fwdMsgId =
+      typeof msg.forwarded_from_msg_id === "string" && msg.forwarded_from_msg_id.length > 0
+        ? msg.forwarded_from_msg_id.slice(0, 64)
+        : null;
+    let fwdUsername: string | null = null;
+    if (fwdRoomId && fwdMsgId) {
+      const src = await this.env.DB
+        .prepare("SELECT username FROM messages WHERE id = ? AND room_id = ?")
+        .bind(fwdMsgId, fwdRoomId)
+        .first<{ username: string }>();
+      fwdUsername = src?.username ?? null;
+    }
+
     const selectExisting = () =>
       this.env.DB
         .prepare(
-          "SELECT id, client_id, user_id, username, text, created_at, attachment_id, ciphertext, iv, key_version FROM messages WHERE room_id = ? AND client_id = ?",
+          "SELECT id, client_id, user_id, username, text, created_at, attachment_id, ciphertext, iv, key_version, reply_to_id, mentions, forwarded_from_room_id, forwarded_from_msg_id, forwarded_from_username FROM messages WHERE room_id = ? AND client_id = ?",
         )
         .bind(att.roomId, clientId)
         .first<StoredMessage>();
@@ -196,14 +242,21 @@ export class Room extends DurableObject<Env> {
         ciphertext,
         iv,
         key_version: keyVersion,
+        reply_to_id: replyToId,
+        mentions: mentionsJson,
+        forwarded_from_room_id: fwdRoomId,
+        forwarded_from_msg_id: fwdMsgId,
+        forwarded_from_username: fwdUsername,
       };
       try {
         await this.env.DB
           .prepare(
             `INSERT INTO messages
                (id, room_id, user_id, username, text, created_at, client_id,
-                attachment_id, ciphertext, iv, key_version)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                attachment_id, ciphertext, iv, key_version,
+                reply_to_id, mentions,
+                forwarded_from_room_id, forwarded_from_msg_id, forwarded_from_username)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .bind(
             stored.id,
@@ -217,6 +270,11 @@ export class Room extends DurableObject<Env> {
             ciphertext,
             iv,
             keyVersion,
+            replyToId,
+            mentionsJson,
+            fwdRoomId,
+            fwdMsgId,
+            fwdUsername,
           )
           .run();
       } catch (_e) {
@@ -241,6 +299,11 @@ export class Room extends DurableObject<Env> {
       text: stored.text,
       created_at: stored.created_at,
       attachment: attachmentPayload,
+      reply_to_id: stored.reply_to_id,
+      mentions: decodeMentions(stored.mentions),
+      forwarded_from_room_id: stored.forwarded_from_room_id,
+      forwarded_from_msg_id: stored.forwarded_from_msg_id,
+      forwarded_from_username: stored.forwarded_from_username,
     };
     if (stored.ciphertext) {
       out.ciphertext = stored.ciphertext;
@@ -285,6 +348,11 @@ export class Room extends DurableObject<Env> {
         text: msg.text,
         created_at: msg.created_at,
         attachment,
+        reply_to_id: msg.reply_to_id,
+        mentions: decodeMentions(msg.mentions),
+        forwarded_from_room_id: msg.forwarded_from_room_id,
+        forwarded_from_msg_id: msg.forwarded_from_msg_id,
+        forwarded_from_username: msg.forwarded_from_username,
       };
       if (msg.ciphertext) {
         messagePayload.ciphertext = msg.ciphertext;
@@ -308,7 +376,7 @@ export class Room extends DurableObject<Env> {
     if (!attachmentId) return null;
     const a = await this.env.DB
       .prepare(
-        "SELECT id, mime, r2_key, width, height, wrapped_key, wrapped_key_iv, iv, key_version FROM attachments WHERE id = ?",
+        "SELECT id, mime, r2_key, width, height, blurhash, duration_ms, wrapped_key, wrapped_key_iv, iv, key_version FROM attachments WHERE id = ?",
       )
       .bind(attachmentId)
       .first<{
@@ -317,6 +385,8 @@ export class Room extends DurableObject<Env> {
         r2_key: string;
         width: number | null;
         height: number | null;
+        blurhash: string | null;
+        duration_ms: number | null;
         wrapped_key: string | null;
         wrapped_key_iv: string | null;
         iv: string | null;
@@ -333,6 +403,8 @@ export class Room extends DurableObject<Env> {
       url: !isE2e && base ? `${base}/${a.r2_key}` : null,
       width: a.width,
       height: a.height,
+      blurhash: a.blurhash ?? null,
+      duration_ms: a.duration_ms ?? null,
     };
     if (isE2e) {
       payload.wrapped_key = a.wrapped_key;
@@ -363,13 +435,43 @@ export class Room extends DurableObject<Env> {
         .first<{ name: string }>();
       if (!room) return;
 
+      const now = Date.now();
+      // F9 mute-with-TTL semantics. A member is muted (skip) when
+      // muted_until = 0 (forever) OR (muted_until > now). NOT muted when
+      // muted_until IS NULL OR (muted_until > 0 AND muted_until <= now).
       const { results } = await this.env.DB
-        .prepare("SELECT user_id FROM memberships WHERE room_id = ? AND muted = 0")
-        .bind(roomId)
+        .prepare(
+          `SELECT user_id FROM memberships
+           WHERE room_id = ?
+             AND (muted_until IS NULL OR (muted_until > 0 AND muted_until <= ?))`,
+        )
+        .bind(roomId, now)
         .all<{ user_id: string }>();
-      const targets = (results ?? [])
-        .map((r) => r.user_id)
-        .filter((uid) => uid !== msg.user_id && !online.has(uid));
+      const target = new Set<string>((results ?? []).map((r) => r.user_id));
+
+      // F3 mention-forced targets: mentioned members get a push even when
+      // muted. Resolution depends on room type.
+      const mentionList = decodeMentions(msg.mentions);
+      if (mentionList && mentionList.length > 0) {
+        if (isE2e) {
+          // E2E: mentions hold opaque keyed tokens; resolve to user_ids.
+          const placeholders = mentionList.map(() => "?").join(",");
+          const { results: tagRows } = await this.env.DB
+            .prepare(
+              `SELECT user_id FROM room_mention_tags WHERE room_id = ? AND tag IN (${placeholders})`,
+            )
+            .bind(roomId, ...mentionList)
+            .all<{ user_id: string }>();
+          for (const r of tagRows ?? []) target.add(r.user_id);
+        } else {
+          // Non-E2E: mentions hold plaintext user_ids.
+          for (const uid of mentionList) target.add(uid);
+        }
+      }
+
+      // Always exclude the sender and currently-online members.
+      target.delete(msg.user_id);
+      const targets = [...target].filter((uid) => !online.has(uid));
       if (targets.length === 0) return;
 
       // For E2E rooms the server never sees plaintext, so push previews are
@@ -380,14 +482,28 @@ export class Room extends DurableObject<Env> {
           ? msg.text.length > 140 ? msg.text.slice(0, 140) + "…" : msg.text
           : "📎 вложение";
 
-      await notifyDevices(this.env.DB, this.env, targets, {
+      // F12: E2E pushes are mutable-content so the iOS NSE can fetch + decrypt
+      // the ciphertext. Custom data carries the room/message id to fetch.
+      const payload: Record<string, unknown> = {
         alert: {
           title: isE2e ? `${room.name} · 🔒` : `${room.name} · ${msg.username}`,
           body,
         },
         sound: "default",
         "thread-id": roomId,
-      });
+      };
+      if (isE2e) {
+        payload["mutable-content"] = 1;
+        payload.room_id = roomId;
+        payload.msg_id = msg.id;
+      }
+
+      await notifyDevices(
+        this.env.DB,
+        this.env,
+        targets,
+        payload as Parameters<typeof notifyDevices>[3],
+      );
     } catch (e) {
       logError({ at: "pushOffline", err: (e as Error).message });
     }

@@ -10,7 +10,7 @@ import {
   unauthorized,
   z,
 } from "../lib/openapi";
-import { messageEditBody, readBody } from "../lib/schemas";
+import { forwardBody, messageEditBody, reactionBody, readBody } from "../lib/schemas";
 import type { Env } from "../lib/types";
 
 export const messageRoutes = createApp();
@@ -23,10 +23,14 @@ const HISTORY_SELECT = `
     m.id, m.client_id, m.user_id, m.username, m.text, m.created_at,
     m.edited_at, m.deleted_at,
     m.attachment_id, m.ciphertext, m.iv, m.key_version,
+    m.reply_to_id,
+    m.forwarded_from_room_id, m.forwarded_from_msg_id, m.forwarded_from_username,
     a.mime AS attachment_mime,
     a.r2_key AS attachment_key,
     a.width AS attachment_width,
     a.height AS attachment_height,
+    a.blurhash AS attachment_blurhash,
+    a.duration_ms AS attachment_duration_ms,
     a.wrapped_key AS attachment_wrapped_key,
     a.wrapped_key_iv AS attachment_wrapped_key_iv,
     a.iv AS attachment_iv,
@@ -49,10 +53,31 @@ const MessageSchema = z
     ciphertext: z.string().optional().describe("base64 AES-GCM ciphertext, set in E2E rooms."),
     iv: z.string().optional(),
     key_version: z.number().int().optional(),
+    reply_to_id: z.string().nullable().optional().describe("F1: id of the quoted message."),
+    forwarded_from_room_id: z.string().nullable().optional(),
+    forwarded_from_msg_id: z.string().nullable().optional(),
+    forwarded_from_username: z.string().nullable().optional(),
+    reactions: z
+      .array(
+        z.object({
+          emoji: z.string(),
+          count: z.number().int(),
+          mine: z.boolean(),
+          user_ids: z.array(z.string()),
+        }),
+      )
+      .optional()
+      .describe("F2: aggregated reactions on this message."),
   })
   .openapi("Message");
 
-function shapeMessage(env: Env, row: Record<string, unknown>): Record<string, unknown> {
+type ReactionAgg = { emoji: string; count: number; mine: boolean; user_ids: string[] };
+
+function shapeMessage(
+  env: Env,
+  row: Record<string, unknown>,
+  reactionsById?: Map<string, ReactionAgg[]>,
+): Record<string, unknown> {
   const isE2e = !!row.ciphertext;
   const base: Record<string, unknown> = {
     id: row.id,
@@ -63,6 +88,10 @@ function shapeMessage(env: Env, row: Record<string, unknown>): Record<string, un
     created_at: row.created_at,
     edited_at: row.edited_at ?? null,
     deleted_at: row.deleted_at ?? null,
+    reply_to_id: row.reply_to_id ?? null,
+    forwarded_from_room_id: row.forwarded_from_room_id ?? null,
+    forwarded_from_msg_id: row.forwarded_from_msg_id ?? null,
+    forwarded_from_username: row.forwarded_from_username ?? null,
   };
   if (isE2e && !row.deleted_at) {
     base.ciphertext = row.ciphertext;
@@ -78,6 +107,8 @@ function shapeMessage(env: Env, row: Record<string, unknown>): Record<string, un
       url: base_url ? `${base_url}/${key}` : null,
       width: row.attachment_width ?? null,
       height: row.attachment_height ?? null,
+      blurhash: row.attachment_blurhash ?? null,
+      duration_ms: row.attachment_duration_ms ?? null,
     };
     if (row.attachment_wrapped_key) {
       att.wrapped_key = row.attachment_wrapped_key;
@@ -87,7 +118,53 @@ function shapeMessage(env: Env, row: Record<string, unknown>): Record<string, un
     }
     base.attachment = att;
   }
+  if (reactionsById) {
+    base.reactions = reactionsById.get(String(row.id)) ?? [];
+  }
   return base;
+}
+
+/**
+ * F2: aggregate reactions for a page of messages in ONE query, returning a
+ * map of message_id -> [{emoji, count, mine, user_ids}]. Empty map when the
+ * page has no messages (caller should skip calling this).
+ */
+async function reactionsForPage(
+  env: Env,
+  rows: Array<Record<string, unknown>>,
+  meId: string,
+): Promise<Map<string, ReactionAgg[]>> {
+  const out = new Map<string, ReactionAgg[]>();
+  const ids = rows.map((r) => String(r.id));
+  if (ids.length === 0) return out;
+  const placeholders = ids.map(() => "?").join(",");
+  const { results } = await env.DB
+    .prepare(
+      `SELECT message_id, emoji, user_id FROM reactions WHERE message_id IN (${placeholders})`,
+    )
+    .bind(...ids)
+    .all<{ message_id: string; emoji: string; user_id: string }>();
+  // message_id -> emoji -> agg
+  const byMsg = new Map<string, Map<string, ReactionAgg>>();
+  for (const r of results ?? []) {
+    let emojiMap = byMsg.get(r.message_id);
+    if (!emojiMap) {
+      emojiMap = new Map();
+      byMsg.set(r.message_id, emojiMap);
+    }
+    let agg = emojiMap.get(r.emoji);
+    if (!agg) {
+      agg = { emoji: r.emoji, count: 0, mine: false, user_ids: [] };
+      emojiMap.set(r.emoji, agg);
+    }
+    agg.count += 1;
+    agg.user_ids.push(r.user_id);
+    if (r.user_id === meId) agg.mine = true;
+  }
+  for (const [msgId, emojiMap] of byMsg) {
+    out.set(msgId, [...emojiMap.values()]);
+  }
+  return out;
 }
 
 const historyRoute = createRoute({
@@ -132,8 +209,10 @@ messageRoutes.openapi(historyRoute, async (c) => {
       )
       .bind(roomId, ts, limit)
       .all();
+    const rows = results as Array<Record<string, unknown>>;
+    const reactions = rows.length ? await reactionsForPage(c.env, rows, u.id) : undefined;
     return c.json(
-      { messages: (results as Array<Record<string, unknown>>).map((r) => shapeMessage(c.env, r)) } as never,
+      { messages: rows.map((r) => shapeMessage(c.env, r, reactions)) } as never,
       200,
     );
   }
@@ -146,12 +225,10 @@ messageRoutes.openapi(historyRoute, async (c) => {
       )
       .bind(roomId, isNaN(ts) ? Date.now() : ts, limit)
       .all();
+    const rows = (results as Array<Record<string, unknown>>).reverse();
+    const reactions = rows.length ? await reactionsForPage(c.env, rows, u.id) : undefined;
     return c.json(
-      {
-        messages: (results as Array<Record<string, unknown>>)
-          .reverse()
-          .map((r) => shapeMessage(c.env, r)),
-      } as never,
+      { messages: rows.map((r) => shapeMessage(c.env, r, reactions)) } as never,
       200,
     );
   }
@@ -162,12 +239,10 @@ messageRoutes.openapi(historyRoute, async (c) => {
     )
     .bind(roomId, limit)
     .all();
+  const rows = (results as Array<Record<string, unknown>>).reverse();
+  const reactions = rows.length ? await reactionsForPage(c.env, rows, u.id) : undefined;
   return c.json(
-    {
-      messages: (results as Array<Record<string, unknown>>)
-        .reverse()
-        .map((r) => shapeMessage(c.env, r)),
-    } as never,
+    { messages: rows.map((r) => shapeMessage(c.env, r, reactions)) } as never,
     200,
   );
 });
@@ -447,6 +522,358 @@ messageRoutes.openapi(readsRoute, async (c) => {
     .bind(roomId)
     .all();
   return c.json({ reads: results } as never, 200);
+});
+
+// ---- F12 NSE single-message fetch ----------------------------------------
+
+const SingleMessageSchema = z
+  .object({
+    id: z.string(),
+    room_id: z.string(),
+    user_id: z.string(),
+    username: z.string(),
+    created_at: z.number().int(),
+    e2e: z.boolean(),
+    ciphertext: z.string().nullable(),
+    iv: z.string().nullable(),
+    key_version: z.number().int().nullable(),
+    text: z.string(),
+    attachment: z.record(z.unknown()).nullable(),
+    reply_to_id: z.string().nullable(),
+  })
+  .openapi("SingleMessage");
+
+const singleMessageRoute = createRoute({
+  method: "get",
+  path: "/rooms/{id}/messages/{msgId}",
+  tags: ["rooms"],
+  summary: "Fetch one message (used by the iOS Notification Service Extension)",
+  description:
+    "Returns a single message by id. For E2E rooms the ciphertext/iv/key_version " +
+    "are returned (text is empty); for plaintext rooms text is set and ciphertext is null.",
+  middleware: [requireAuth] as const,
+  request: { params: z.object({ id: z.string(), msgId: z.string() }) },
+  responses: {
+    200: jsonContent(SingleMessageSchema, "OK."),
+    401: unauthorized,
+    403: errorResponse("No access."),
+    404: notFound,
+  },
+});
+
+messageRoutes.openapi(singleMessageRoute, async (c) => {
+  const u = getUser(c);
+  const { id: roomId, msgId } = c.req.valid("param");
+  if (!(await isRoomAccessible(c.env, roomId, u.id))) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+  const { results } = await c.env.DB
+    .prepare(`${HISTORY_SELECT} WHERE m.room_id = ? AND m.id = ? LIMIT 1`)
+    .bind(roomId, msgId)
+    .all();
+  const rows = results as Array<Record<string, unknown>>;
+  if (rows.length === 0) return c.json({ error: "not found" }, 404);
+  const row = rows[0];
+  const isE2e = !!row.ciphertext;
+  const shaped = shapeMessage(c.env, row);
+  return c.json(
+    {
+      id: row.id,
+      room_id: roomId,
+      user_id: row.user_id,
+      username: row.username,
+      created_at: row.created_at,
+      e2e: isE2e,
+      ciphertext: isE2e ? (row.ciphertext as string) : null,
+      iv: isE2e ? (row.iv as string | null) : null,
+      key_version: isE2e ? (row.key_version as number | null) : null,
+      text: isE2e ? "" : (row.deleted_at ? "" : (row.text as string)),
+      attachment: (shaped.attachment as Record<string, unknown> | undefined) ?? null,
+      reply_to_id: row.reply_to_id ?? null,
+    } as never,
+    200,
+  );
+});
+
+// ---- F2 reactions ---------------------------------------------------------
+
+const addReactionRoute = createRoute({
+  method: "put",
+  path: "/rooms/{id}/messages/{msgId}/reactions",
+  tags: ["rooms"],
+  summary: "Add a reaction to a message",
+  middleware: [requireAuth] as const,
+  request: {
+    params: z.object({ id: z.string(), msgId: z.string() }),
+    body: { required: true, content: { "application/json": { schema: reactionBody } } },
+  },
+  responses: {
+    200: jsonContent(z.object({ ok: z.boolean() }), "Stored."),
+    401: unauthorized,
+    403: errorResponse("No access."),
+  },
+});
+
+messageRoutes.openapi(addReactionRoute, async (c) => {
+  const u = getUser(c);
+  const { id: roomId, msgId } = c.req.valid("param");
+  if (!(await isRoomAccessible(c.env, roomId, u.id))) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+  const { emoji } = c.req.valid("json");
+  const now = Date.now();
+  await c.env.DB
+    .prepare(
+      "INSERT OR IGNORE INTO reactions (message_id, room_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(msgId, roomId, u.id, emoji, now)
+    .run();
+
+  const event = {
+    type: "reaction_add",
+    message_id: msgId,
+    user_id: u.id,
+    emoji,
+    created_at: now,
+  };
+  try {
+    const stub = c.env.ROOM.get(c.env.ROOM.idFromName(roomId));
+    await stub.fetch("https://room.internal/broadcast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(event),
+    });
+  } catch { /* */ }
+  c.executionCtx.waitUntil(
+    notifyRoomMembers(c.env, roomId, {
+      type: "reaction_add",
+      room_id: roomId,
+      message_id: msgId,
+      user_id: u.id,
+      emoji,
+    }),
+  );
+  return c.json({ ok: true }, 200);
+});
+
+const removeReactionRoute = createRoute({
+  method: "delete",
+  path: "/rooms/{id}/messages/{msgId}/reactions/{emoji}",
+  tags: ["rooms"],
+  summary: "Remove a reaction from a message",
+  middleware: [requireAuth] as const,
+  request: { params: z.object({ id: z.string(), msgId: z.string(), emoji: z.string() }) },
+  responses: {
+    204: { description: "Removed." },
+    401: unauthorized,
+    403: errorResponse("No access."),
+  },
+});
+
+messageRoutes.openapi(removeReactionRoute, async (c) => {
+  const u = getUser(c);
+  const { id: roomId, msgId, emoji: rawEmoji } = c.req.valid("param");
+  if (!(await isRoomAccessible(c.env, roomId, u.id))) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+  const emoji = decodeURIComponent(rawEmoji);
+  await c.env.DB
+    .prepare("DELETE FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?")
+    .bind(msgId, u.id, emoji)
+    .run();
+
+  const event = {
+    type: "reaction_remove",
+    message_id: msgId,
+    user_id: u.id,
+    emoji,
+  };
+  try {
+    const stub = c.env.ROOM.get(c.env.ROOM.idFromName(roomId));
+    await stub.fetch("https://room.internal/broadcast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(event),
+    });
+  } catch { /* */ }
+  c.executionCtx.waitUntil(
+    notifyRoomMembers(c.env, roomId, {
+      type: "reaction_remove",
+      room_id: roomId,
+      message_id: msgId,
+      user_id: u.id,
+      emoji,
+    }),
+  );
+  return c.body(null, 204);
+});
+
+// ---- F18 forward ----------------------------------------------------------
+
+const forwardRoute = createRoute({
+  method: "post",
+  path: "/rooms/{id}/forward",
+  tags: ["rooms"],
+  summary: "Forward a message into this (target) room",
+  description:
+    "Inserts a new message into the target room carrying provenance to the source " +
+    "message. The server never transcrypts: for an E2E target the client supplies " +
+    "re-encrypted ciphertext/iv/key_version; for a plaintext target it supplies text.",
+  middleware: [requireAuth] as const,
+  request: {
+    params: z.object({ id: z.string() }),
+    body: { required: true, content: { "application/json": { schema: forwardBody } } },
+  },
+  responses: {
+    200: jsonContent(z.object({ message: MessageSchema }), "Stored."),
+    400: errorResponse("Wrong body shape for the target room type."),
+    401: unauthorized,
+    403: errorResponse("No access to target or source room."),
+  },
+});
+
+messageRoutes.openapi(forwardRoute, async (c) => {
+  const u = getUser(c);
+  const { id: targetRoomId } = c.req.valid("param");
+  const body = c.req.valid("json");
+
+  if (!(await isRoomAccessible(c.env, targetRoomId, u.id))) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+  if (!(await isRoomAccessible(c.env, body.source_room_id, u.id))) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+
+  const targetRoom = await c.env.DB
+    .prepare("SELECT e2e FROM rooms WHERE id = ?")
+    .bind(targetRoomId)
+    .first<{ e2e: number }>();
+  const isE2e = targetRoom?.e2e === 1;
+
+  let text = "";
+  let ciphertext: string | null = null;
+  let iv: string | null = null;
+  let keyVersion: number | null = null;
+  if (isE2e) {
+    if (!body.ciphertext || !body.iv || body.key_version == null) {
+      return c.json({ error: "e2e forward requires ciphertext, iv, key_version" }, 400);
+    }
+    ciphertext = body.ciphertext.slice(0, 8192);
+    iv = body.iv.slice(0, 64);
+    keyVersion = body.key_version;
+  } else {
+    text = (body.text ?? "").slice(0, 4000);
+  }
+  const attachmentId = body.attachment_id ? body.attachment_id.slice(0, 64) : null;
+  const clientId = body.client_id.slice(0, 64);
+
+  // Resolve provenance username from the source message.
+  const src = await c.env.DB
+    .prepare("SELECT username FROM messages WHERE id = ? AND room_id = ?")
+    .bind(body.source_msg_id, body.source_room_id)
+    .first<{ username: string }>();
+  const fwdUsername = src?.username ?? null;
+
+  const selectExisting = () =>
+    c.env.DB
+      .prepare(`${HISTORY_SELECT} WHERE m.room_id = ? AND m.client_id = ? LIMIT 1`)
+      .bind(targetRoomId, clientId)
+      .first<Record<string, unknown>>();
+
+  const existing = await selectExisting();
+  if (existing) {
+    return c.json({ message: shapeMessage(c.env, existing) } as never, 200);
+  }
+
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  let row: Record<string, unknown> | null = null;
+  try {
+    await c.env.DB
+      .prepare(
+        `INSERT INTO messages
+           (id, room_id, user_id, username, text, created_at, client_id,
+            attachment_id, ciphertext, iv, key_version,
+            forwarded_from_room_id, forwarded_from_msg_id, forwarded_from_username)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        id,
+        targetRoomId,
+        u.id,
+        u.username,
+        text,
+        now,
+        clientId,
+        attachmentId,
+        ciphertext,
+        iv,
+        keyVersion,
+        body.source_room_id,
+        body.source_msg_id,
+        fwdUsername,
+      )
+      .run();
+  } catch (e) {
+    // Idempotency: UNIQUE(room_id, client_id) conflict -> return existing.
+    const dup = await selectExisting();
+    if (dup) return c.json({ message: shapeMessage(c.env, dup) } as never, 200);
+    throw e;
+  }
+
+  row = await c.env.DB
+    .prepare(`${HISTORY_SELECT} WHERE m.room_id = ? AND m.id = ? LIMIT 1`)
+    .bind(targetRoomId, id)
+    .first<Record<string, unknown>>();
+  const shaped = shapeMessage(c.env, row ?? {});
+
+  // Broadcast over the target Room DO, mirroring the WS path.
+  const broadcast: Record<string, unknown> = {
+    type: "msg",
+    id,
+    client_id: clientId,
+    user_id: u.id,
+    username: u.username,
+    text,
+    created_at: now,
+    attachment: shaped.attachment ?? null,
+    reply_to_id: null,
+    mentions: null,
+    forwarded_from_room_id: body.source_room_id,
+    forwarded_from_msg_id: body.source_msg_id,
+    forwarded_from_username: fwdUsername,
+  };
+  if (ciphertext) {
+    broadcast.ciphertext = ciphertext;
+    broadcast.iv = iv;
+    broadcast.key_version = keyVersion;
+  }
+  try {
+    const stub = c.env.ROOM.get(c.env.ROOM.idFromName(targetRoomId));
+    await stub.fetch("https://room.internal/broadcast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(broadcast),
+    });
+  } catch { /* */ }
+
+  // Fan out new_message exactly like the WS path.
+  const room = await c.env.DB
+    .prepare("SELECT name FROM rooms WHERE id = ?")
+    .bind(targetRoomId)
+    .first<{ name: string }>();
+  const messagePayload: Record<string, unknown> = { ...broadcast };
+  delete messagePayload.type;
+  c.executionCtx.waitUntil(
+    notifyRoomMembers(c.env, targetRoomId, {
+      type: "new_message",
+      room_id: targetRoomId,
+      room_name: room?.name ?? "",
+      message: messagePayload,
+    }),
+  );
+
+  return c.json({ message: shaped } as never, 200);
 });
 
 export { MSG_COLUMNS };
