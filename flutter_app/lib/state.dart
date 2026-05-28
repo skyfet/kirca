@@ -6,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'api.dart';
 import 'crypto/key_store.dart';
 import 'crypto/room_keys.dart';
+import 'crypto/shared_secrets.dart';
 import 'push.dart';
 import 'storage/cache.dart';
 
@@ -32,6 +33,8 @@ class AuthNotifier extends StateNotifier<Auth?> {
       final un = await _storage.read(key: 'username');
       if (t != null && uid != null && un != null) {
         state = Auth(t, uid, un);
+        // Mirror the restored token into the shared keychain for the iOS NSE.
+        await SharedSecrets.writeAuth(t);
         _registerPushSilently(t);
       }
     } catch (_) {
@@ -45,6 +48,8 @@ class AuthNotifier extends StateNotifier<Auth?> {
       await _storage.write(key: 'userId', value: a.userId);
       await _storage.write(key: 'username', value: a.username);
     } catch (_) { /* best-effort */ }
+    // Mirror the token + API base into the shared keychain for the iOS NSE.
+    await SharedSecrets.writeAuth(a.token);
     state = a;
     _registerPushSilently(a.token);
   }
@@ -95,6 +100,8 @@ class AuthNotifier extends StateNotifier<Auth?> {
     try { await wipeAllCaches(); } catch (_) {}
     // Clear E2E key material so the next account on this device starts clean.
     try { await KeyStore.wipeIdentity(); } catch (_) {}
+    // Drop the App Group keychain mirror (auth + room keys) the NSE reads.
+    try { await SharedSecrets.clearAll(); } catch (_) {}
     RoomKeyCache.clear();
   }
 }

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import '../api.dart';
 import 'e2e.dart';
 import 'key_store.dart';
+import 'shared_secrets.dart';
 
 /// Process-wide cache of decrypted per-room AES keys, indexed by
 /// (roomId, keyVersion). Cleared on logout.
@@ -40,6 +41,10 @@ class RoomKeyCache {
 
   static void put(String roomId, int keyVersion, Uint8List key) {
     _cache.putIfAbsent(roomId, () => {})[keyVersion] = key;
+    // Best-effort mirror into the App Group keychain so the iOS NSE can
+    // decrypt offline pushes for this key version. Fire-and-forget — never
+    // blocks or breaks the in-memory cache contract.
+    SharedSecrets.writeRoomKey(roomId, keyVersion, key);
   }
 
   static void clear() {
