@@ -7,6 +7,7 @@ import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../api.dart';
 import '../state.dart';
+import '../storage/cache.dart';
 import '../theme/app_background.dart';
 import '../theme/app_theme.dart';
 
@@ -273,6 +274,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       ),
                     ),
                     const SizedBox(height: 24),
+                    _BlockedUsersRow(
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const BlockedUsersScreen(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
                     GlassButton.custom(
                       onTap: _logoutAll,
                       width: double.infinity,
@@ -330,6 +339,266 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                   ],
                 ),
         ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Profile row that opens the blocked-users management subpage. Shows the
+/// current count as a trailing badge, driven by [blockedUsersProvider].
+class _BlockedUsersRow extends ConsumerWidget {
+  const _BlockedUsersRow({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final count = ref.watch(blockedUsersProvider).maybeWhen(
+          data: (list) => list.length,
+          orElse: () => 0,
+        );
+    return GlassButton.custom(
+      onTap: onTap,
+      width: double.infinity,
+      height: 56,
+      useOwnLayer: true,
+      shape: LiquidRoundedSuperellipse(borderRadius: 12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Row(
+          children: [
+            const Icon(Icons.block, color: AppColors.onGlassMuted, size: 20),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Заблокированные',
+                style: TextStyle(
+                  color: AppColors.onGlass,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            if (count > 0)
+              Text(
+                '$count',
+                style: const TextStyle(color: AppColors.onGlassMuted),
+              ),
+            const SizedBox(width: 6),
+            const Icon(Icons.chevron_right, color: AppColors.onGlassMuted, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// F8: blocked-users management. Lists every blocked user (avatar / display
+/// name / username) and lets the user unblock them. Mirrors the unblock into
+/// [BlocksCache] so the [blockedUsersProvider] stream refreshes the UI.
+class BlockedUsersScreen extends ConsumerStatefulWidget {
+  const BlockedUsersScreen({super.key});
+
+  @override
+  ConsumerState<BlockedUsersScreen> createState() => _BlockedUsersScreenState();
+}
+
+class _BlockedUsersScreenState extends ConsumerState<BlockedUsersScreen> {
+  final _pending = <String>{};
+
+  Future<void> _unblock(CachedBlockedUser u) async {
+    final auth = ref.read(authProvider);
+    if (auth == null) return;
+    setState(() => _pending.add(u.userId));
+    try {
+      await Api(token: auth.token).removeBlock(u.userId);
+      await BlocksCache.remove(u.userId);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _pending.remove(u.userId));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final blocked = ref.watch(blockedUsersProvider);
+    return GlassPage(
+      background: const AppBackground(),
+      statusBarStyle: GlassStatusBarStyle.light,
+      edgeToEdge: true,
+      child: AdaptiveLiquidGlassLayer(
+        clipBehavior: Clip.none,
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          extendBodyBehindAppBar: true,
+          appBar: GlassAppBar(
+            leading: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: GlassIconButton(
+                size: 36,
+                icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.onGlass, size: 18),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
+            title: const Text(
+              'Заблокированные',
+              style: TextStyle(color: AppColors.onGlass, fontSize: 18, fontWeight: FontWeight.w700),
+            ),
+          ),
+          body: SafeArea(
+            child: blocked.when(
+              loading: () => const Center(child: GlassProgressIndicator.circular(size: 28)),
+              error: (e, _) => Center(
+                child: Text('$e', style: const TextStyle(color: AppColors.onGlassMuted)),
+              ),
+              data: (users) {
+                if (users.isEmpty) {
+                  return const _BlockedEmptyState();
+                }
+                return ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                  itemCount: users.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (_, i) => _BlockedUserTile(
+                    user: users[i],
+                    busy: _pending.contains(users[i].userId),
+                    onUnblock: () => _unblock(users[i]),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BlockedUserTile extends StatelessWidget {
+  const _BlockedUserTile({
+    required this.user,
+    required this.busy,
+    required this.onUnblock,
+  });
+
+  final CachedBlockedUser user;
+  final bool busy;
+  final VoidCallback onUnblock;
+
+  @override
+  Widget build(BuildContext context) {
+    final avatar = user.avatarUrl;
+    final title = (user.displayName?.isNotEmpty ?? false)
+        ? user.displayName!
+        : (user.username ?? user.userId);
+    final subtitle = (user.username?.isNotEmpty ?? false) ? '@${user.username}' : null;
+    return GlassPanel(
+      padding: const EdgeInsets.all(12),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 22,
+            backgroundColor: AppColors.surface,
+            backgroundImage: avatar != null ? NetworkImage(avatar) : null,
+            child: avatar == null
+                ? Text(
+                    title.characters.first.toUpperCase(),
+                    style: const TextStyle(
+                      color: AppColors.onGlass,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  )
+                : null,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.onGlass,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (subtitle != null)
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: AppColors.onGlassMuted, fontSize: 12),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          GlassButton.custom(
+            onTap: busy ? () {} : onUnblock,
+            height: 36,
+            width: 110,
+            glowColor: AppColors.accent,
+            useOwnLayer: true,
+            shape: LiquidRoundedSuperellipse(borderRadius: 10),
+            child: Center(
+              child: busy
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: AppColors.onGlass,
+                      ),
+                    )
+                  : const Text(
+                      'Разблокировать',
+                      style: TextStyle(
+                        color: AppColors.onGlass,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BlockedEmptyState extends StatelessWidget {
+  const _BlockedEmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.block, color: AppColors.onGlassMuted, size: 48),
+            SizedBox(height: 16),
+            Text(
+              'Нет заблокированных',
+              style: TextStyle(
+                color: AppColors.onGlass,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            SizedBox(height: 6),
+            Text(
+              'Заблокированные пользователи появятся здесь',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: AppColors.onGlassMuted, fontSize: 13),
+            ),
+          ],
         ),
       ),
     );
