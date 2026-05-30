@@ -31,6 +31,13 @@ jobs:
       # Unit tests (vitest-pool-workers). Failure here aborts the deploy.
       - run: npm test
 
+      # E2E smoke (Newman) against a LOCAL worker. Runs before deploy so a
+      # failure aborts it. Must not hit prod: prod rate limits and the public
+      # URL (which sandboxed CI networks may block) surface as misleading 503s,
+      # and a 503 on an auth step cascades into 401s once no token is returned.
+      - name: E2E smoke (Newman, local worker)
+        run: npm run test:e2e:local
+
       # Apply migrations to remote D1 (idempotent — wrangler tracks what's already applied).
       - name: Apply D1 migrations
         run: npx wrangler d1 migrations apply kirca-api --remote
@@ -43,6 +50,3 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: E2E smoke (Newman)
-        run: npm run test:e2e
