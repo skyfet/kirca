@@ -9,6 +9,7 @@ import 'package:record/record.dart';
 import '../api.dart';
 import '../crypto/room_cipher.dart';
 import '../storage/cache.dart';
+import '../util/blurhash_encode.dart';
 import '../util/mime.dart';
 import '../util/uuid.dart';
 
@@ -121,8 +122,13 @@ class MediaPicker {
   Future<UploadedMedia?> pickAndUploadPlain() async {
     final picked = await _pick();
     if (picked == null) return null;
-    final (path: path, bytes: bytes, mime: mime) = picked;
-    final reserved = await api.reserveUpload(mime: mime, size: bytes.length);
+    final (path: _, bytes: bytes, mime: mime) = picked;
+    final blurhash = await encodeBlurhash(bytes);
+    final reserved = await api.reserveUpload(
+      mime: mime,
+      size: bytes.length,
+      blurhash: blurhash,
+    );
     final ids = _idsFromReserve(reserved);
     if (ids == null) {
       throw const FormatException('upload reservation missing url/id');
@@ -134,6 +140,7 @@ class MediaPicker {
         id: ids.attachmentId,
         url: reserved['public_url']?.toString(),
         mime: mime,
+        blurhash: blurhash,
       ),
     );
   }
@@ -147,7 +154,10 @@ class MediaPicker {
     final picked = await _pick();
     if (picked == null) return null;
     final (path: _, bytes: bytes, mime: mime) = picked;
-
+    // Blurhash is computed from the plaintext bytes BEFORE encryption so the
+    // server never sees a thumbnail-ish hash. It rides to the receiver inside
+    // the encrypted message envelope (see encodeE2eEnvelope).
+    final blurhash = await encodeBlurhash(bytes);
     final enc = await cipher.encryptAttachment(Uint8List.fromList(bytes));
     final reserved = await api.reserveUpload(
       mime: 'application/octet-stream',
@@ -178,17 +188,23 @@ class MediaPicker {
         wrappedKeyIv: base64Encode(enc.cipher.wrappedKeyIv),
         iv: base64Encode(enc.cipher.iv),
         keyVersion: enc.keyVersion,
+        blurhash: blurhash,
       ),
     );
   }
 
   /// Upload an already-recorded voice note (plain mode). [durationMs] is
-  /// carried through to the bubble so it can show the clip length immediately.
+  /// carried through to the bubble so it can show the clip length immediately,
+  /// and to the server so other clients pick it up from history.
   Future<UploadedMedia> uploadVoicePlain(
     Uint8List bytes, {
     required int durationMs,
   }) async {
-    final reserved = await api.reserveUpload(mime: kVoiceMime, size: bytes.length);
+    final reserved = await api.reserveUpload(
+      mime: kVoiceMime,
+      size: bytes.length,
+      durationMs: durationMs,
+    );
     final ids = _idsFromReserve(reserved);
     if (ids == null) {
       throw const FormatException('upload reservation missing url/id');
