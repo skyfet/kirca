@@ -9,11 +9,14 @@ class PendingMessage {
   final String text;
   final int createdAt;
   CachedAttachment? attachment;
+  /// F1: id of the message this pending send is replying to (if any).
+  final String? replyToId;
   PendingMessage({
     required this.clientId,
     required this.text,
     required this.createdAt,
     this.attachment,
+    this.replyToId,
   });
 }
 
@@ -30,6 +33,8 @@ class ChatRow {
   final bool deleted;
   final CachedAttachment? attachment;
   final CachedMessage? serverMsg;
+  /// F1: id of the quoted message this row replies to (server or pending).
+  final String? replyToId;
 
   const ChatRow._({
     required this.kind,
@@ -41,6 +46,7 @@ class ChatRow {
     required this.deleted,
     required this.attachment,
     required this.serverMsg,
+    this.replyToId,
   });
 
   factory ChatRow.server(CachedMessage m) => ChatRow._(
@@ -53,6 +59,7 @@ class ChatRow {
         deleted: m.deletedAt != null,
         attachment: m.attachment,
         serverMsg: m,
+        replyToId: m.replyToId,
       );
 
   factory ChatRow.pending(PendingMessage p, String userId, String username) =>
@@ -66,7 +73,18 @@ class ChatRow {
         deleted: false,
         attachment: p.attachment,
         serverMsg: null,
+        replyToId: p.replyToId,
       );
 
   bool get isPending => kind == ChatRowKind.pending;
+
+  /// Stable id for the underlying message when this is a server row.
+  String? get messageId => serverMsg?.id;
+
+  /// F2: reaction buckets to render under the bubble (server rows only).
+  List<MessageReaction> get reactions => serverMsg?.reactions ?? const [];
+
+  bool get isForwarded => serverMsg?.isForwarded ?? false;
+  String? get forwardedFromUsername => serverMsg?.forwardedFromUsername;
+  List<String>? get mentions => serverMsg?.mentions;
 }

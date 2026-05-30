@@ -8,7 +8,7 @@ import {
   unauthorized,
   z,
 } from "../lib/openapi";
-import { identityPublishBody, publishRoomKeysBody } from "../lib/schemas";
+import { identityPublishBody, mentionTagPublishBody, publishRoomKeysBody } from "../lib/schemas";
 
 export const e2eRoutes = createApp();
 
@@ -254,4 +254,48 @@ e2eRoutes.openapi(getKeysRoute, async (c) => {
     .bind(roomId, u.id)
     .all();
   return c.json({ keys: results } as never, 200);
+});
+
+// ---- F3 E2E mention tags ---------------------------------------------------
+
+const publishMentionTagRoute = createRoute({
+  method: "put",
+  path: "/rooms/{id}/mention-tag",
+  tags: ["rooms"],
+  summary: "Publish the caller's opaque mention tag for an E2E room",
+  description:
+    "Each member publishes an opaque keyed token (HMAC over their user_id under " +
+    "a key derived from the room key). When another member mentions them, the " +
+    "client includes this token in the message's mention list; the server matches " +
+    "the token here to route a push without learning the plaintext mention list.",
+  middleware: [requireAuth] as const,
+  request: {
+    params: z.object({ id: z.string() }),
+    body: { required: true, content: { "application/json": { schema: mentionTagPublishBody } } },
+  },
+  responses: {
+    200: jsonContent(z.object({ ok: z.boolean() }), "Stored."),
+    401: unauthorized,
+    403: errorResponse("No access."),
+  },
+});
+
+e2eRoutes.openapi(publishMentionTagRoute, async (c) => {
+  const u = getUser(c);
+  const { id: roomId } = c.req.valid("param");
+  if (!(await isRoomAccessible(c.env, roomId, u.id))) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+  const { tag } = c.req.valid("json");
+  const now = Date.now();
+  await c.env.DB
+    .prepare(
+      `INSERT INTO room_mention_tags (room_id, user_id, tag, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(room_id, user_id)
+       DO UPDATE SET tag = excluded.tag, created_at = excluded.created_at`,
+    )
+    .bind(roomId, u.id, tag, now)
+    .run();
+  return c.json({ ok: true }, 200);
 });

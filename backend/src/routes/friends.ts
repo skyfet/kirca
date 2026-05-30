@@ -1,6 +1,7 @@
 import { getUser, requireAuth, uuid } from "../lib/middleware";
 import { notifyUser } from "../lib/notify";
 import { notifyDevices } from "../lib/apns";
+import type { Env } from "../lib/types";
 import {
   createApp,
   createRoute,
@@ -18,6 +19,96 @@ export const friendRoutes = createApp();
 // независимо от направления запроса и упрощает выборку друзей одного юзера.
 function pairKey(a: string, b: string): { ua: string; ub: string } {
   return a < b ? { ua: a, ub: b } : { ua: b, ub: a };
+}
+
+// dm_key = "minUserId:maxUserId" (lexicographic), giving an idempotent key for
+// the 1:1 room independent of who accepts.
+function dmKeyFor(a: string, b: string): string {
+  const { ua, ub } = pairKey(a, b);
+  return `${ua}:${ub}`;
+}
+
+// Provision the DM room for a freshly-formed friendship, idempotently.
+// `creator` is whichever side triggered the friendship (used as created_by on a
+// new room). The DB writes are awaited (so callers must await this before
+// returning), while the `room_added` fan-out — one per user, each carrying the
+// peer's id — is deferred via executionCtx.waitUntil. Does NOT seal room keys;
+// the client does that via POST /rooms/{id}/keys.
+async function provisionDmRoom(
+  c: { env: Env; executionCtx: ExecutionContext },
+  userA: string,
+  userB: string,
+  creator: string,
+): Promise<void> {
+  const dmKey = dmKeyFor(userA, userB);
+  const now = Date.now();
+
+  let roomId: string;
+  const existing = await c.env.DB
+    .prepare("SELECT id FROM rooms WHERE dm_key = ?")
+    .bind(dmKey)
+    .first<{ id: string }>();
+
+  if (existing) {
+    roomId = existing.id;
+    // Ensure both memberships exist (the room could pre-exist with one side gone).
+    await c.env.DB.batch([
+      c.env.DB
+        .prepare(
+          "INSERT OR IGNORE INTO memberships (user_id, room_id, role, joined_at) VALUES (?, ?, 'member', ?)",
+        )
+        .bind(userA, roomId, now),
+      c.env.DB
+        .prepare(
+          "INSERT OR IGNORE INTO memberships (user_id, room_id, role, joined_at) VALUES (?, ?, 'member', ?)",
+        )
+        .bind(userB, roomId, now),
+    ]);
+  } else {
+    roomId = uuid();
+    await c.env.DB.batch([
+      c.env.DB
+        .prepare(
+          "INSERT INTO rooms (id, name, created_at, is_public, created_by, e2e, key_version, kind, dm_key) VALUES (?, '', ?, 0, ?, 1, 1, 'dm', ?)",
+        )
+        .bind(roomId, now, creator, dmKey),
+      c.env.DB
+        .prepare(
+          "INSERT OR IGNORE INTO memberships (user_id, room_id, role, joined_at) VALUES (?, ?, 'member', ?)",
+        )
+        .bind(userA, roomId, now),
+      c.env.DB
+        .prepare(
+          "INSERT OR IGNORE INTO memberships (user_id, room_id, role, joined_at) VALUES (?, ?, 'member', ?)",
+        )
+        .bind(userB, roomId, now),
+    ]);
+  }
+
+  const baseRoom = {
+    id: roomId,
+    name: "",
+    is_public: false,
+    is_member: true,
+    role: "member",
+    muted: false,
+    unread: 0,
+    e2e: true,
+    key_version: 1,
+    kind: "dm",
+  };
+  c.executionCtx.waitUntil(
+    Promise.all([
+      notifyUser(c.env, userA, {
+        type: "room_added",
+        room: { ...baseRoom, dm_peer_id: userB },
+      }),
+      notifyUser(c.env, userB, {
+        type: "room_added",
+        room: { ...baseRoom, dm_peer_id: userA },
+      }),
+    ]),
+  );
 }
 
 // ---- list my friends -----------------------------------------------------
@@ -105,6 +196,7 @@ const createFriendRequestRoute = createRoute({
     200: jsonContent(z.record(z.unknown()), "Request created or auto-accepted into a friendship."),
     400: errorResponse("Self-request."),
     401: unauthorized,
+    403: errorResponse("Blocked in either direction."),
     404: errorResponse("User not found."),
     409: errorResponse("Already friends or request already pending."),
   },
@@ -133,6 +225,15 @@ friendRoutes.openapi(createFriendRequestRoute, async (c) => {
   }
   if (!targetId) return c.json({ error: "user not found" }, 404);
   if (targetId === u.id) return c.json({ error: "cannot friend yourself" }, 400);
+
+  // Blocked in either direction? Refuse before creating/auto-accepting anything.
+  const blocked = await c.env.DB
+    .prepare(
+      "SELECT 1 AS x FROM blocks WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)",
+    )
+    .bind(u.id, targetId, targetId, u.id)
+    .first<{ x: number }>();
+  if (blocked) return c.json({ error: "blocked" }, 403);
 
   // Already friends?
   const { ua, ub } = pairKey(u.id, targetId);
@@ -175,6 +276,8 @@ friendRoutes.openapi(createFriendRequestRoute, async (c) => {
         username: u.username,
       }),
     );
+    // Friendship => provision the E2E DM room (idempotent).
+    await provisionDmRoom(c, u.id, targetId, u.id);
     return c.json(
       { ok: true, friendship: true, user_id: targetId, username: targetUsername } as never,
       200,
@@ -324,6 +427,9 @@ friendRoutes.openapi(acceptFriendRequestRoute, async (c) => {
       username: u.username,
     }),
   );
+  // Friendship => provision the E2E DM room (idempotent). The accepter (u) is
+  // the room creator.
+  await provisionDmRoom(c, u.id, fr.from_user_id, u.id);
   return c.json({ ok: true, friend_id: fr.from_user_id } as never, 200);
 });
 

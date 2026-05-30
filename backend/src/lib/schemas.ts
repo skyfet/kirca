@@ -86,6 +86,8 @@ export const uploadSignBody = z
     size: z.number().int().positive().max(20 * 1024 * 1024), // 20 MB
     width: z.number().int().positive().optional(),
     height: z.number().int().positive().optional(),
+    duration_ms: z.number().int().positive().max(3600000).optional(),
+    blurhash: z.string().min(1).max(64).optional(),
     // E2E fields. When `e2e: true` is set, the worker stops validating mime
     // against the image whitelist (the body is opaque ciphertext) and instead
     // requires the per-blob AES key material and the owning room.
@@ -103,10 +105,21 @@ export const uploadSignBody = z
     "e2e=true requires room_id, iv, wrapped_key, wrapped_key_iv, key_version",
   );
 
+// F1+F3+F18 per-message metadata, merged into BOTH send bodies if they exist.
+// (Live sends go over the Room DO WS; these document/validate the frame and are
+// reused by the forward route.) Export the field set so room.ts can reference shapes.
+export const messageMetaFields = {
+  reply_to_id: z.string().min(1).max(64).optional(),
+  mentions: z.array(z.string().min(1).max(256)).max(64).optional(), // user_ids OR keyed tokens
+  forwarded_from_room_id: z.string().min(1).max(64).optional(),
+  forwarded_from_msg_id: z.string().min(1).max(64).optional(),
+};
+
 export const sendMessageBody = z.object({
   client_id: z.string().min(1).max(64),
   text: z.string().max(4000).optional(),
   attachment_id: z.string().min(1).max(64).optional(),
+  ...messageMetaFields,
 }).refine((v) => (v.text && v.text.trim().length > 0) || v.attachment_id, {
   message: "text or attachment_id required",
 });
@@ -140,6 +153,44 @@ export const sendEncryptedMessageBody = z.object({
   ciphertext: b64,
   iv: b64,
   key_version: z.number().int().nonnegative(),
+  attachment_id: z.string().min(1).max(64).optional(),
+  ...messageMetaFields,
+});
+
+// F2 reactions
+export const reactionBody = z.object({ emoji: z.string().min(1).max(32) });
+
+// F5+F9 unified membership patch (replaces muteBody usage in a later batch;
+// keep muteBody defined for now). muted_until: null=unmute, 0=forever, >0=epoch.
+export const membershipPatchBody = z.object({
+  muted_until: z.number().int().nonnegative().nullable().optional(),
+  muted: z.boolean().optional(),       // legacy; maps true->0, false->null
+  pinned: z.boolean().optional(),
+  archived: z.boolean().optional(),
+}).refine(
+  (v) => v.muted_until !== undefined || v.muted !== undefined || v.pinned !== undefined || v.archived !== undefined,
+  "at least one field required",
+);
+
+// F8 blocks
+export const blockCreateBody = z.object({
+  user_id: z.string().min(1).max(64).optional(),
+  username: z.string().min(1).max(64).optional(),
+}).refine((v) => v.user_id || v.username, "user_id or username required");
+
+// F3 E2E mention keyed-token publish (one per member per room)
+export const mentionTagPublishBody = z.object({ tag: z.string().min(1).max(128) });
+
+// F18 forward via REST (target room id in the path). For E2E target the client
+// supplies re-encrypted ciphertext; for plaintext target it supplies text.
+export const forwardBody = z.object({
+  client_id: z.string().min(1).max(64),
+  source_room_id: z.string().min(1).max(64),
+  source_msg_id: z.string().min(1).max(64),
+  text: z.string().max(4000).optional(),
+  ciphertext: z.string().min(1).max(8192).optional(),
+  iv: z.string().min(1).max(64).optional(),
+  key_version: z.number().int().nonnegative().optional(),
   attachment_id: z.string().min(1).max(64).optional(),
 });
 

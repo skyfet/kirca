@@ -125,6 +125,73 @@ class UserWs {
       case 'friend_removed':
         _onFriendRemoved(m);
         break;
+      case 'membership_changed':
+        _onMembershipChanged(m);
+        break;
+      case 'blocked':
+        _onBlocked(m);
+        break;
+      case 'unblocked':
+        _onUnblocked(m);
+        break;
+      case 'reaction_add':
+        _onReaction(m, add: true);
+        break;
+      case 'reaction_remove':
+        _onReaction(m, add: false);
+        break;
+    }
+  }
+
+  /// Multi-device sync of per-room membership flags (mute-ttl / pin / archive).
+  /// Only the fields the server includes are applied.
+  Future<void> _onMembershipChanged(Map<String, dynamic> m) async {
+    final roomId = m['room_id']?.toString();
+    if (roomId == null) return;
+    if (m.containsKey('muted_until')) {
+      await RoomsCache.setMutedUntil(roomId, (m['muted_until'] as num?)?.toInt());
+    }
+    if (m.containsKey('pinned')) {
+      await RoomsCache.setPinned(roomId, m['pinned'] == true || m['pinned'] == 1);
+    }
+    if (m.containsKey('archived')) {
+      await RoomsCache.setArchived(
+          roomId, m['archived'] == true || m['archived'] == 1);
+    }
+  }
+
+  Future<void> _onBlocked(Map<String, dynamic> m) async {
+    final uid = m['user_id']?.toString();
+    if (uid == null || uid.isEmpty) return;
+    await BlocksCache.add(
+      uid,
+      username: m['username']?.toString(),
+      displayName: m['display_name']?.toString(),
+      avatarUrl: m['avatar_url']?.toString(),
+    );
+  }
+
+  Future<void> _onUnblocked(Map<String, dynamic> m) async {
+    final uid = m['user_id']?.toString();
+    if (uid == null || uid.isEmpty) return;
+    await BlocksCache.remove(uid);
+  }
+
+  /// F4: reaction add/remove on a message, applied even when the chat isn't
+  /// open so counts stay fresh once the user navigates in.
+  Future<void> _onReaction(Map<String, dynamic> m, {required bool add}) async {
+    final roomId = m['room_id']?.toString();
+    final msgId = m['message_id']?.toString();
+    final actorId = m['user_id']?.toString() ?? '';
+    final emoji = m['emoji']?.toString() ?? '';
+    if (roomId == null || msgId == null || emoji.isEmpty) return;
+    final mine = actorId == userId;
+    if (add) {
+      await MessagesCache.applyReactionAdd(roomId, msgId, actorId, emoji,
+          mine: mine);
+    } else {
+      await MessagesCache.applyReactionRemove(roomId, msgId, actorId, emoji,
+          mine: mine);
     }
   }
 
@@ -229,7 +296,11 @@ class UserWs {
   Future<void> _onRoomAdded(Map<String, dynamic> m) async {
     final r = m['room'] as Map<String, dynamic>?;
     if (r == null) return;
-    await RoomsCache.upsert(r);
+    // DM rooms (kind=='dm') carry a peer id in the payload — stash it directly
+    // since the server-side dm_key can't be resolved without the current user.
+    final dmPeerId = r['dm_peer_id']?.toString() ??
+        RoomsCache.peerFromDmKey(r['dm_key']?.toString(), userId);
+    await RoomsCache.upsert(r, dmPeerId: dmPeerId);
   }
 
   Future<void> _onRoomRemoved(Map<String, dynamic> m) async {

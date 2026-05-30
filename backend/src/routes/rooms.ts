@@ -10,7 +10,7 @@ import {
   unauthorized,
   z,
 } from "../lib/openapi";
-import { createRoomBody, inviteCreateBody, muteBody } from "../lib/schemas";
+import { createRoomBody, inviteCreateBody, membershipPatchBody } from "../lib/schemas";
 
 export const roomRoutes = createApp();
 
@@ -26,6 +26,11 @@ const RoomSchema = z
       .optional()
       .describe("1/true if message bodies are stored as opaque ciphertext."),
     key_version: z.number().int().optional(),
+    kind: z.string().optional().describe("'group' (default) or 'dm'."),
+    dm_key: z.string().nullable().optional().describe("For DM rooms: 'minUserId:maxUserId'."),
+    pinned: z.union([z.number().int(), z.boolean()]).optional(),
+    archived: z.union([z.number().int(), z.boolean()]).optional(),
+    muted_until: z.number().int().nullable().optional(),
   })
   .openapi("Room");
 
@@ -49,8 +54,12 @@ roomRoutes.openapi(listRoomsRoute, async (c) => {
     .prepare(
       `SELECT
          r.id, r.name, r.is_public, r.created_by, r.e2e, r.key_version,
+         r.kind, r.dm_key,
          (m.user_id IS NOT NULL) AS is_member,
          COALESCE(m.muted, 0) AS muted,
+         m.muted_until AS muted_until,
+         COALESCE(m.pinned, 0) AS pinned,
+         COALESCE(m.archived, 0) AS archived,
          COALESCE(m.role, '') AS role,
          COALESCE(
            (SELECT COUNT(*) FROM messages msg
@@ -267,38 +276,81 @@ roomRoutes.openapi(membersRoute, async (c) => {
   return c.json({ members } as never, 200);
 });
 
-// ---- per-membership mute ----
-const muteRoute = createRoute({
+// ---- per-membership state: mute (with TTL) / pin / archive ----
+const membershipPatchRoute = createRoute({
   method: "patch",
   path: "/rooms/{id}/membership",
   tags: ["rooms"],
-  summary: "Mute / unmute room for the current user",
+  summary: "Update per-user membership state (mute / pin / archive)",
+  description:
+    "All fields optional. `muted_until`: null=unmute, 0=forever, >0=epoch-ms. Legacy `muted` maps true->0, false->null.",
   middleware: [requireAuth] as const,
   request: {
     params: z.object({ id: z.string() }),
-    body: { required: true, content: { "application/json": { schema: muteBody } } },
+    body: { required: true, content: { "application/json": { schema: membershipPatchBody } } },
   },
   responses: {
-    200: jsonContent(z.object({ muted: z.boolean() }), "OK."),
+    200: jsonContent(
+      z.object({
+        muted_until: z.number().int().nullable(),
+        pinned: z.boolean(),
+        archived: z.boolean(),
+      }),
+      "OK — echoes the resulting state.",
+    ),
     401: unauthorized,
     404: errorResponse("Not a member."),
   },
 });
 
-roomRoutes.openapi(muteRoute, async (c) => {
+roomRoutes.openapi(membershipPatchRoute, async (c) => {
   const u = getUser(c);
   const { id: roomId } = c.req.valid("param");
-  const { muted } = c.req.valid("json");
+  const body = c.req.valid("json");
   const m = await c.env.DB
-    .prepare("SELECT 1 AS x FROM memberships WHERE user_id = ? AND room_id = ?")
+    .prepare(
+      "SELECT muted_until, pinned, archived FROM memberships WHERE user_id = ? AND room_id = ?",
+    )
     .bind(u.id, roomId)
-    .first<{ x: number }>();
+    .first<{ muted_until: number | null; pinned: number; archived: number }>();
   if (!m) return c.json({ error: "not a member" }, 404);
+
+  // Resolve resulting values, starting from the current row.
+  let mutedUntil: number | null = m.muted_until;
+  if (body.muted_until !== undefined) {
+    mutedUntil = body.muted_until;
+  } else if (body.muted !== undefined) {
+    // Legacy boolean: true -> forever (0), false -> not muted (NULL).
+    mutedUntil = body.muted ? 0 : null;
+  }
+  const pinned = body.pinned !== undefined ? (body.pinned ? 1 : 0) : m.pinned;
+  const archived = body.archived !== undefined ? (body.archived ? 1 : 0) : m.archived;
+
+  // Keep the legacy `muted` boolean in sync with muted_until.
+  const mutedBool = mutedUntil !== null ? 1 : 0;
+
   await c.env.DB
-    .prepare("UPDATE memberships SET muted = ? WHERE user_id = ? AND room_id = ?")
-    .bind(muted ? 1 : 0, u.id, roomId)
+    .prepare(
+      "UPDATE memberships SET muted_until = ?, muted = ?, pinned = ?, archived = ? WHERE user_id = ? AND room_id = ?",
+    )
+    .bind(mutedUntil, mutedBool, pinned, archived, u.id, roomId)
     .run();
-  return c.json({ muted }, 200);
+
+  // Multi-device sync: tell the user's own devices.
+  c.executionCtx.waitUntil(
+    notifyUser(c.env, u.id, {
+      type: "membership_changed",
+      room_id: roomId,
+      muted_until: mutedUntil,
+      pinned: pinned === 1,
+      archived: archived === 1,
+    }),
+  );
+
+  return c.json(
+    { muted_until: mutedUntil, pinned: pinned === 1, archived: archived === 1 },
+    200,
+  );
 });
 
 // ---- invites ----

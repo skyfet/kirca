@@ -1,10 +1,35 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:sqflite/sqflite.dart';
 
 import 'db.dart';
 
 // ---- models ----------------------------------------------------------------
+
+/// Aggregated reaction bucket for a single emoji on a message.
+class MessageReaction {
+  final String emoji;
+  final int count;
+  final bool mine;
+  const MessageReaction({
+    required this.emoji,
+    required this.count,
+    required this.mine,
+  });
+
+  factory MessageReaction.fromJson(Map<String, dynamic> j) => MessageReaction(
+        emoji: j['emoji']?.toString() ?? '',
+        count: (j['count'] as num?)?.toInt() ?? 0,
+        mine: j['mine'] == true,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'emoji': emoji,
+        'count': count,
+        'mine': mine,
+      };
+}
 
 class CachedAttachment {
   final String? id;
@@ -19,6 +44,9 @@ class CachedAttachment {
   final String? wrappedKeyIv;
   final String? iv;
   final int? keyVersion;
+  // F10/F11: BlurHash placeholder for images, duration for voice/audio blobs.
+  final String? blurhash;
+  final int? durationMs;
   const CachedAttachment({
     this.id,
     this.url,
@@ -29,6 +57,8 @@ class CachedAttachment {
     this.wrappedKeyIv,
     this.iv,
     this.keyVersion,
+    this.blurhash,
+    this.durationMs,
   });
 
   bool get isE2e => wrappedKey != null;
@@ -51,6 +81,13 @@ class CachedMessage {
   final String? ciphertext;
   final String? iv;
   final int? keyVersion;
+  // F1 reply / F2 forward / F3 mentions / F4 reactions metadata.
+  final String? replyToId;
+  final List<String>? mentions;
+  final String? forwardedFromRoomId;
+  final String? forwardedFromMsgId;
+  final String? forwardedFromUsername;
+  final List<MessageReaction> reactions;
 
   const CachedMessage({
     required this.id,
@@ -66,9 +103,16 @@ class CachedMessage {
     this.ciphertext,
     this.iv,
     this.keyVersion,
+    this.replyToId,
+    this.mentions,
+    this.forwardedFromRoomId,
+    this.forwardedFromMsgId,
+    this.forwardedFromUsername,
+    this.reactions = const [],
   });
 
   bool get isE2e => ciphertext != null;
+  bool get isForwarded => forwardedFromMsgId != null;
 
   factory CachedMessage.fromRow(Map<String, dynamic> r) {
     final attId = r['attachment_id'] as String?;
@@ -94,11 +138,45 @@ class CachedMessage {
               wrappedKeyIv: r['attachment_wrapped_key_iv'] as String?,
               iv: r['attachment_iv'] as String?,
               keyVersion: r['attachment_key_version'] as int?,
+              blurhash: r['attachment_blurhash'] as String?,
+              durationMs: r['attachment_duration_ms'] as int?,
             ),
       ciphertext: r['ciphertext'] as String?,
       iv: r['iv'] as String?,
       keyVersion: r['key_version'] as int?,
+      replyToId: r['reply_to_id'] as String?,
+      mentions: _decodeStringList(r['mentions'] as String?),
+      forwardedFromRoomId: r['forwarded_from_room_id'] as String?,
+      forwardedFromMsgId: r['forwarded_from_msg_id'] as String?,
+      forwardedFromUsername: r['forwarded_from_username'] as String?,
+      reactions: _decodeReactions(r['reactions'] as String?),
     );
+  }
+
+  static List<String>? _decodeStringList(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final list = jsonDecode(raw);
+      if (list is List) {
+        return list.map((e) => e.toString()).toList(growable: false);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  static List<MessageReaction> _decodeReactions(String? raw) {
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final list = jsonDecode(raw);
+      if (list is List) {
+        return list
+            .whereType<Map>()
+            .map((e) => MessageReaction.fromJson(e.cast<String, dynamic>()))
+            .where((r) => r.emoji.isNotEmpty && r.count > 0)
+            .toList(growable: false);
+      }
+    } catch (_) {}
+    return const [];
   }
 }
 
@@ -108,26 +186,48 @@ class CachedRoom {
   final bool isPublic;
   final bool isMember;
   final String role;
-  final bool muted;
   final int unread;
   final String? lastText;
   final int? lastAt;
   final bool e2e;
   final int keyVersion;
+  // F5 pin / F6 archive / F7 mute-with-ttl / F8 DM rooms.
+  final bool pinned;
+  final bool archived;
+  /// null = not muted; 0 = muted forever; >0 = muted until this epoch-ms.
+  final int? mutedUntil;
+  final String kind; // 'group' | 'dm'
+  final String? dmPeerId;
 
-  const CachedRoom({
+  /// [muted] is a backwards-compatible convenience: when true (and no explicit
+  /// [mutedUntil] given) it sets `mutedUntil = 0` (muted forever). Prefer
+  /// passing [mutedUntil] directly.
+  CachedRoom({
     required this.id,
     required this.name,
     required this.isPublic,
     required this.isMember,
     required this.role,
-    required this.muted,
     required this.unread,
     this.lastText,
     this.lastAt,
     this.e2e = false,
     this.keyVersion = 0,
-  });
+    this.pinned = false,
+    this.archived = false,
+    int? mutedUntil,
+    bool muted = false,
+    this.kind = 'group',
+    this.dmPeerId,
+  }) : mutedUntil = mutedUntil ?? (muted ? 0 : null);
+
+  /// Backwards-compatible muted getter. A room counts as muted whenever a
+  /// `muted_until` is set (0 = forever, or any future timestamp). We treat a
+  /// past timestamp as still "muted" too so the flag survives until the row is
+  /// refreshed — the server is the source of truth for expiry.
+  bool get muted => mutedUntil != null;
+
+  bool get isDm => kind == 'dm';
 
   factory CachedRoom.fromRow(Map<String, dynamic> r) => CachedRoom(
         id: r['id'] as String,
@@ -135,12 +235,16 @@ class CachedRoom {
         isPublic: (r['is_public'] as int) == 1,
         isMember: (r['is_member'] as int? ?? 0) == 1,
         role: (r['role'] as String?) ?? '',
-        muted: (r['muted'] as int? ?? 0) == 1,
         unread: r['unread'] as int? ?? 0,
         lastText: r['last_text'] as String?,
         lastAt: r['last_at'] as int?,
         e2e: (r['e2e'] as int? ?? 0) == 1,
         keyVersion: r['key_version'] as int? ?? 0,
+        pinned: (r['pinned'] as int? ?? 0) == 1,
+        archived: (r['archived'] as int? ?? 0) == 1,
+        mutedUntil: r['muted_until'] as int?,
+        kind: (r['kind'] as String?) ?? 'group',
+        dmPeerId: r['dm_peer_id'] as String?,
       );
 }
 
@@ -245,22 +349,46 @@ class RoomsCache {
   }
 
   /// Полностью переписать список (после успешного GET /rooms).
-  static Future<void> replaceAll(List<Map<String, dynamic>> serverRooms) async {
+  ///
+  /// [currentUserId] is used to resolve a DM room's `dm_key` ("minId:maxId")
+  /// to the *other* user; pass it whenever available so DM rows carry a usable
+  /// `dm_peer_id`.
+  static Future<void> replaceAll(
+    List<Map<String, dynamic>> serverRooms, {
+    String? currentUserId,
+  }) async {
     final db = await AppDb.open();
     await db.transaction((txn) async {
       await txn.delete('rooms');
       final now = DateTime.now().millisecondsSinceEpoch;
       for (final r in serverRooms) {
-        await _insertRoomRaw(txn, r, now);
+        await _insertRoomRaw(txn, r, now, currentUserId: currentUserId);
       }
     });
     _notifier.notify(_key);
   }
 
+  /// Resolve a DM room's peer id from a "minId:maxId" dm_key and the current
+  /// user id. Returns null when the key is malformed or the current user isn't
+  /// part of it.
+  static String? peerFromDmKey(String? dmKey, String? currentUserId) {
+    if (dmKey == null || currentUserId == null) return null;
+    final parts = dmKey.split(':');
+    if (parts.length != 2) return null;
+    if (parts[0] == currentUserId) return parts[1];
+    if (parts[1] == currentUserId) return parts[0];
+    return null;
+  }
+
   /// Идемпотентный upsert одной комнаты (например, после createRoom / room_added).
-  static Future<void> upsert(Map<String, dynamic> r) async {
+  ///
+  /// [dmPeerId] lets the `room_added` handler stash the peer id from the WS
+  /// payload directly, since the server-side `dm_key` ("minId:maxId") can't be
+  /// resolved to "the other user" without knowing the current user id.
+  static Future<void> upsert(Map<String, dynamic> r, {String? dmPeerId}) async {
     final db = await AppDb.open();
-    await _insertRoomRaw(db, r, DateTime.now().millisecondsSinceEpoch);
+    await _insertRoomRaw(db, r, DateTime.now().millisecondsSinceEpoch,
+        dmPeerId: dmPeerId);
     _notifier.notify(_key);
   }
 
@@ -271,10 +399,44 @@ class RoomsCache {
   }
 
   static Future<void> setMuted(String roomId, bool muted) async {
+    // Legacy entry point: map to the muted_until model (0 = forever, null = off)
+    // and keep the legacy `muted` column in sync for any old reader.
+    await setMutedUntil(roomId, muted ? 0 : null);
+  }
+
+  /// F7: set the mute-until timestamp. null = unmute, 0 = forever, >0 = epoch-ms.
+  static Future<void> setMutedUntil(String roomId, int? mutedUntil) async {
     final db = await AppDb.open();
     await db.update(
       'rooms',
-      {'muted': muted ? 1 : 0},
+      {
+        'muted_until': mutedUntil,
+        'muted': mutedUntil != null ? 1 : 0,
+      },
+      where: 'id = ?',
+      whereArgs: [roomId],
+    );
+    _notifier.notify(_key);
+  }
+
+  /// F5: pin / unpin a room.
+  static Future<void> setPinned(String roomId, bool pinned) async {
+    final db = await AppDb.open();
+    await db.update(
+      'rooms',
+      {'pinned': pinned ? 1 : 0},
+      where: 'id = ?',
+      whereArgs: [roomId],
+    );
+    _notifier.notify(_key);
+  }
+
+  /// F6: archive / unarchive a room.
+  static Future<void> setArchived(String roomId, bool archived) async {
+    final db = await AppDb.open();
+    await db.update(
+      'rooms',
+      {'archived': archived ? 1 : 0},
       where: 'id = ?',
       whereArgs: [roomId],
     );
@@ -316,20 +478,32 @@ class RoomsCache {
   static Future<void> _insertRoomRaw(
     DatabaseExecutor x,
     Map<String, dynamic> r,
-    int updatedAt,
-  ) async {
-    final isPub = (r['is_public'] is num)
-        ? (r['is_public'] as num).toInt() == 1
-        : r['is_public'] == true;
-    final muted = (r['muted'] is num)
-        ? (r['muted'] as num).toInt() == 1
-        : r['muted'] == true;
-    final isMember = (r['is_member'] is num)
-        ? (r['is_member'] as num).toInt() == 1
-        : r['is_member'] == true;
-    final e2e = (r['e2e'] is num)
-        ? (r['e2e'] as num).toInt() == 1
-        : r['e2e'] == true;
+    int updatedAt, {
+    String? currentUserId,
+    String? dmPeerId,
+  }) async {
+    bool asBool(dynamic v) => (v is num) ? v.toInt() == 1 : v == true;
+    final isPub = asBool(r['is_public']);
+    final isMember = asBool(r['is_member']);
+    final e2e = asBool(r['e2e']);
+    final pinned = asBool(r['pinned']);
+    final archived = asBool(r['archived']);
+    // muted_until is the v5 source of truth. Fall back to a legacy `muted`
+    // boolean (=> 0 forever) when only that is present.
+    int? mutedUntil;
+    if (r.containsKey('muted_until')) {
+      mutedUntil = (r['muted_until'] as num?)?.toInt();
+    } else if (asBool(r['muted'])) {
+      mutedUntil = 0;
+    }
+    final kind = (r['kind']?.toString().isNotEmpty ?? false)
+        ? r['kind'].toString()
+        : 'group';
+    // Prefer an explicitly-passed peer id (room_added payload); else resolve
+    // from dm_key against the current user; else any server-provided field.
+    final peerId = dmPeerId ??
+        peerFromDmKey(r['dm_key']?.toString(), currentUserId) ??
+        r['dm_peer_id']?.toString();
     await x.insert(
       'rooms',
       {
@@ -338,13 +512,18 @@ class RoomsCache {
         'is_public': isPub ? 1 : 0,
         'is_member': isMember ? 1 : 0,
         'role': r['role']?.toString(),
-        'muted': muted ? 1 : 0,
+        'muted': mutedUntil != null ? 1 : 0,
         'unread': (r['unread'] as num?)?.toInt() ?? 0,
         'last_text': r['last_text']?.toString(),
         'last_at': (r['last_at'] as num?)?.toInt(),
         'updated_at': updatedAt,
         'e2e': e2e ? 1 : 0,
         'key_version': (r['key_version'] as num?)?.toInt() ?? 0,
+        'pinned': pinned ? 1 : 0,
+        'archived': archived ? 1 : 0,
+        'muted_until': mutedUntil,
+        'kind': kind,
+        'dm_peer_id': peerId,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
@@ -474,6 +653,35 @@ class MessagesCache {
         if (prev != null && prev.isNotEmpty) text = prev;
       }
     }
+    // mentions: server sends a JSON array (or list); persist as JSON text.
+    String? mentionsJson;
+    final rawMentions = m['mentions'];
+    if (rawMentions is List) {
+      mentionsJson = jsonEncode(rawMentions.map((e) => e.toString()).toList());
+    } else if (rawMentions is String && rawMentions.isNotEmpty) {
+      mentionsJson = rawMentions; // already JSON-encoded
+    }
+    // reactions: server sends [{emoji,count,mine,user_ids}]; we keep
+    // {emoji,count,mine} for rendering.
+    String? reactionsJson;
+    final rawReactions = m['reactions'];
+    if (rawReactions is List) {
+      final shaped = rawReactions
+          .whereType<Map>()
+          .map((e) {
+            final r = e.cast<String, dynamic>();
+            return {
+              'emoji': r['emoji']?.toString() ?? '',
+              'count': (r['count'] as num?)?.toInt() ?? 0,
+              'mine': r['mine'] == true,
+            };
+          })
+          .where((r) => (r['emoji'] as String).isNotEmpty)
+          .toList();
+      reactionsJson = shaped.isEmpty ? null : jsonEncode(shaped);
+    } else if (rawReactions is String && rawReactions.isNotEmpty) {
+      reactionsJson = rawReactions;
+    }
     await x.insert(
       'messages',
       {
@@ -498,9 +706,97 @@ class MessagesCache {
         'attachment_wrapped_key_iv': att?['wrapped_key_iv']?.toString(),
         'attachment_iv': att?['iv']?.toString(),
         'attachment_key_version': (att?['key_version'] as num?)?.toInt(),
+        'reply_to_id': m['reply_to_id']?.toString(),
+        'mentions': mentionsJson,
+        'forwarded_from_room_id': m['forwarded_from_room_id']?.toString(),
+        'forwarded_from_msg_id': m['forwarded_from_msg_id']?.toString(),
+        'forwarded_from_username': m['forwarded_from_username']?.toString(),
+        'reactions': reactionsJson,
+        'attachment_blurhash': att?['blurhash']?.toString(),
+        'attachment_duration_ms': (att?['duration_ms'] as num?)?.toInt(),
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+  }
+
+  /// F4: apply a `reaction_add` event (or optimistic local add). Aggregates
+  /// the count for [emoji] on message [msgId] and flips `mine` when the actor
+  /// is the current user (pass [mine] = true in that case).
+  static Future<void> applyReactionAdd(
+    String roomId,
+    String msgId,
+    String userId,
+    String emoji, {
+    bool mine = false,
+  }) async {
+    await _mutateReactions(roomId, msgId, (buckets) {
+      final i = buckets.indexWhere((b) => b['emoji'] == emoji);
+      if (i == -1) {
+        buckets.add({'emoji': emoji, 'count': 1, 'mine': mine});
+      } else {
+        final cur = buckets[i];
+        cur['count'] = ((cur['count'] as num?)?.toInt() ?? 0) + 1;
+        if (mine) cur['mine'] = true;
+      }
+    });
+  }
+
+  /// F4: apply a `reaction_remove` event (or optimistic local remove).
+  static Future<void> applyReactionRemove(
+    String roomId,
+    String msgId,
+    String userId,
+    String emoji, {
+    bool mine = false,
+  }) async {
+    await _mutateReactions(roomId, msgId, (buckets) {
+      final i = buckets.indexWhere((b) => b['emoji'] == emoji);
+      if (i == -1) return;
+      final cur = buckets[i];
+      final n = ((cur['count'] as num?)?.toInt() ?? 0) - 1;
+      if (n <= 0) {
+        buckets.removeAt(i);
+      } else {
+        cur['count'] = n;
+        if (mine) cur['mine'] = false;
+      }
+    });
+  }
+
+  static Future<void> _mutateReactions(
+    String roomId,
+    String msgId,
+    void Function(List<Map<String, dynamic>> buckets) mutate,
+  ) async {
+    final db = await AppDb.open();
+    final rows = await db.query(
+      'messages',
+      columns: ['reactions'],
+      where: 'id = ?',
+      whereArgs: [msgId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final raw = rows.first['reactions'] as String?;
+    final buckets = <Map<String, dynamic>>[];
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) {
+          for (final e in decoded) {
+            if (e is Map) buckets.add(e.cast<String, dynamic>());
+          }
+        }
+      } catch (_) {}
+    }
+    mutate(buckets);
+    await db.update(
+      'messages',
+      {'reactions': buckets.isEmpty ? null : jsonEncode(buckets)},
+      where: 'id = ?',
+      whereArgs: [msgId],
+    );
+    _notifier.notify(roomId);
   }
 }
 
@@ -811,6 +1107,164 @@ class FriendRequestsCache {
       };
 }
 
+// ---- drafts (local-only) --------------------------------------------------
+
+class Draft {
+  final String roomId;
+  final String text;
+  final String? replyToId;
+  const Draft({required this.roomId, required this.text, this.replyToId});
+}
+
+/// F9: per-room composer draft. Local-only (never synced to the server).
+class DraftsCache {
+  static Future<Draft?> get(String roomId) async {
+    final db = await AppDb.open();
+    final rows = await db.query(
+      'drafts',
+      where: 'room_id = ?',
+      whereArgs: [roomId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    final r = rows.first;
+    return Draft(
+      roomId: roomId,
+      text: (r['text'] as String?) ?? '',
+      replyToId: r['reply_to_id'] as String?,
+    );
+  }
+
+  static Future<void> set(String roomId, String text, {String? replyToId}) async {
+    final db = await AppDb.open();
+    if (text.isEmpty && replyToId == null) {
+      await clear(roomId);
+      return;
+    }
+    await db.insert(
+      'drafts',
+      {
+        'room_id': roomId,
+        'text': text,
+        'reply_to_id': replyToId,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  static Future<void> clear(String roomId) async {
+    final db = await AppDb.open();
+    await db.delete('drafts', where: 'room_id = ?', whereArgs: [roomId]);
+  }
+}
+
+// ---- blocked users ---------------------------------------------------------
+
+class CachedBlockedUser {
+  final String userId;
+  final String? username;
+  final String? displayName;
+  final String? avatarUrl;
+  final int createdAt;
+
+  const CachedBlockedUser({
+    required this.userId,
+    this.username,
+    this.displayName,
+    this.avatarUrl,
+    required this.createdAt,
+  });
+
+  factory CachedBlockedUser.fromRow(Map<String, dynamic> r) => CachedBlockedUser(
+        userId: r['user_id'] as String,
+        username: r['username'] as String?,
+        displayName: r['display_name'] as String?,
+        avatarUrl: r['avatar_url'] as String?,
+        createdAt: r['created_at'] as int? ?? 0,
+      );
+}
+
+/// F12: locally-cached block list, mirroring the server's `/blocks`.
+class BlocksCache {
+  static final _notifier = _Notifier<int>();
+  static const _key = 0;
+
+  static Stream<List<CachedBlockedUser>> watch() async* {
+    yield await list();
+    await for (final _ in _notifier.watch(_key)) {
+      yield await list();
+    }
+  }
+
+  static Future<List<CachedBlockedUser>> list() async {
+    final db = await AppDb.open();
+    final rows = await db.query('blocked_users', orderBy: 'created_at DESC');
+    return rows.map(CachedBlockedUser.fromRow).toList(growable: false);
+  }
+
+  static Future<bool> isBlocked(String userId) async {
+    final db = await AppDb.open();
+    final rows = await db.query(
+      'blocked_users',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    return rows.isNotEmpty;
+  }
+
+  static Future<void> add(
+    String userId, {
+    String? username,
+    String? displayName,
+    String? avatarUrl,
+    int? createdAt,
+  }) async {
+    final db = await AppDb.open();
+    await db.insert(
+      'blocked_users',
+      {
+        'user_id': userId,
+        'username': username,
+        'display_name': displayName,
+        'avatar_url': avatarUrl,
+        'created_at': createdAt ?? DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    _notifier.notify(_key);
+  }
+
+  static Future<void> remove(String userId) async {
+    final db = await AppDb.open();
+    await db.delete('blocked_users', where: 'user_id = ?', whereArgs: [userId]);
+    _notifier.notify(_key);
+  }
+
+  static Future<void> replaceAll(List<Map<String, dynamic>> list) async {
+    final db = await AppDb.open();
+    await db.transaction((txn) async {
+      await txn.delete('blocked_users');
+      for (final b in list) {
+        await txn.insert(
+          'blocked_users',
+          {
+            'user_id': b['user_id']?.toString() ?? '',
+            'username': b['username']?.toString(),
+            'display_name': b['display_name']?.toString(),
+            'avatar_url': b['avatar_url']?.toString(),
+            'created_at': (b['created_at'] as num?)?.toInt() ??
+                DateTime.now().millisecondsSinceEpoch,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+    _notifier.notify(_key);
+  }
+}
+
 // ---- wipe (на logout) ------------------------------------------------------
 
 Future<void> wipeAllCaches() async {
@@ -823,9 +1277,12 @@ Future<void> wipeAllCaches() async {
     await txn.delete('outbox');
     await txn.delete('friends');
     await txn.delete('friend_requests');
+    await txn.delete('drafts');
+    await txn.delete('blocked_users');
   });
   RoomsCache._notifier.notify(RoomsCache._key);
   InvitesCache._notifier.notify(InvitesCache._key);
   FriendsCache._notifier.notify(FriendsCache._key);
   FriendRequestsCache._notifier.notify(FriendRequestsCache._key);
+  BlocksCache._notifier.notify(BlocksCache._key);
 }

@@ -21,6 +21,11 @@ dependencies:
   liquid_glass_widgets: ^0.12.2
   cupertino_icons: ^1.0.8
   cryptography: ^2.7.0
+  # F11 voice messages: recording + playback.
+  record: ^5.1.2
+  just_audio: ^0.9.42
+  # F10 image placeholders.
+  flutter_blurhash: ^0.8.2
 
 dev_dependencies:
   flutter_lints: ^4.0.0

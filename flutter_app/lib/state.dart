@@ -6,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'api.dart';
 import 'crypto/key_store.dart';
 import 'crypto/room_keys.dart';
+import 'crypto/shared_secrets.dart';
 import 'push.dart';
 import 'storage/cache.dart';
 
@@ -32,6 +33,8 @@ class AuthNotifier extends StateNotifier<Auth?> {
       final un = await _storage.read(key: 'username');
       if (t != null && uid != null && un != null) {
         state = Auth(t, uid, un);
+        // Mirror the restored token into the shared keychain for the iOS NSE.
+        await SharedSecrets.writeAuth(t);
         _registerPushSilently(t);
       }
     } catch (_) {
@@ -45,6 +48,8 @@ class AuthNotifier extends StateNotifier<Auth?> {
       await _storage.write(key: 'userId', value: a.userId);
       await _storage.write(key: 'username', value: a.username);
     } catch (_) { /* best-effort */ }
+    // Mirror the token + API base into the shared keychain for the iOS NSE.
+    await SharedSecrets.writeAuth(a.token);
     state = a;
     _registerPushSilently(a.token);
   }
@@ -95,6 +100,8 @@ class AuthNotifier extends StateNotifier<Auth?> {
     try { await wipeAllCaches(); } catch (_) {}
     // Clear E2E key material so the next account on this device starts clean.
     try { await KeyStore.wipeIdentity(); } catch (_) {}
+    // Drop the App Group keychain mirror (auth + room keys) the NSE reads.
+    try { await SharedSecrets.clearAll(); } catch (_) {}
     RoomKeyCache.clear();
   }
 }
@@ -119,10 +126,55 @@ final roomsProvider = StreamProvider<List<CachedRoom>>((ref) {
   Future<void>.microtask(() async {
     try {
       final list = await Api(token: auth.token).rooms();
-      await RoomsCache.replaceAll(list.cast<Map<String, dynamic>>());
+      await RoomsCache.replaceAll(
+        list.cast<Map<String, dynamic>>(),
+        currentUserId: auth.userId,
+      );
     } catch (_) { /* offline — рисуем из кэша */ }
   });
   return RoomsCache.watch();
+});
+
+/// Rooms shown in the main list: archived rooms filtered out, pinned first,
+/// then the base `updated_at DESC` order preserved. UI for F5/F6 consumes this
+/// instead of mutating the base [roomsProvider]'s contract.
+final sortedRoomsProvider = Provider<AsyncValue<List<CachedRoom>>>((ref) {
+  return ref.watch(roomsProvider).whenData((rooms) {
+    final visible = rooms.where((r) => !r.archived).toList();
+    visible.sort((a, b) {
+      if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
+      // Preserve base ordering (updated_at DESC) within each pin group.
+      final byTime = (b.lastAt ?? 0).compareTo(a.lastAt ?? 0);
+      return byTime;
+    });
+    return visible;
+  });
+});
+
+/// Archived rooms only (newest activity first), for the F6 "Archive" view.
+final archivedRoomsProvider = Provider<AsyncValue<List<CachedRoom>>>((ref) {
+  return ref.watch(roomsProvider).whenData((rooms) {
+    final archived = rooms.where((r) => r.archived).toList();
+    archived.sort((a, b) => (b.lastAt ?? 0).compareTo(a.lastAt ?? 0));
+    return archived;
+  });
+});
+
+/// F12: blocked users. Streams the local [BlocksCache]; kicks off a background
+/// refresh from the server on first watch. UI calls `Api.addBlock/removeBlock`
+/// then mirrors into [BlocksCache] for instant feedback.
+final blockedUsersProvider = StreamProvider<List<CachedBlockedUser>>((ref) {
+  final auth = ref.watch(authProvider);
+  if (auth == null) {
+    return const Stream.empty();
+  }
+  Future<void>.microtask(() async {
+    try {
+      final list = await Api(token: auth.token).listBlocks();
+      await BlocksCache.replaceAll(list.cast<Map<String, dynamic>>());
+    } catch (_) {}
+  });
+  return BlocksCache.watch();
 });
 
 final invitesProvider = StreamProvider<List<CachedInvite>>((ref) {

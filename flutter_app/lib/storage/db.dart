@@ -37,17 +37,19 @@ class AppDb {
     final path = p.join(dir.path, 'kirca.db');
     final db = await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: (db, _) async {
         await _createV1(db);
         await _createV2(db);
         await _migrateV3(db);
         await _migrateV4(db);
+        await _migrateV5(db);
       },
       onUpgrade: (db, oldV, newV) async {
         if (oldV < 2) await _createV2(db);
         if (oldV < 3) await _migrateV3(db);
         if (oldV < 4) await _migrateV4(db);
+        if (oldV < 5) await _migrateV5(db);
       },
     );
     _db = db;
@@ -167,5 +169,41 @@ class AppDb {
     await db.execute("ALTER TABLE messages ADD COLUMN attachment_wrapped_key_iv TEXT");
     await db.execute("ALTER TABLE messages ADD COLUMN attachment_iv TEXT");
     await db.execute("ALTER TABLE messages ADD COLUMN attachment_key_version INTEGER");
+  }
+
+  // v5: P0 feature batch. Reply/mentions/forwards/reactions metadata on
+  // messages, per-room pin/archive/mute-ttl/kind/dm columns, plus local-only
+  // drafts and blocked_users tables. Additive; existing rows survive.
+  static Future<void> _migrateV5(Database db) async {
+    await db.execute("ALTER TABLE messages ADD COLUMN reply_to_id TEXT");
+    await db.execute("ALTER TABLE messages ADD COLUMN mentions TEXT");
+    await db.execute("ALTER TABLE messages ADD COLUMN forwarded_from_room_id TEXT");
+    await db.execute("ALTER TABLE messages ADD COLUMN forwarded_from_msg_id TEXT");
+    await db.execute("ALTER TABLE messages ADD COLUMN forwarded_from_username TEXT");
+    await db.execute("ALTER TABLE messages ADD COLUMN reactions TEXT");
+    await db.execute("ALTER TABLE messages ADD COLUMN attachment_blurhash TEXT");
+    await db.execute("ALTER TABLE messages ADD COLUMN attachment_duration_ms INTEGER");
+    await db.execute("ALTER TABLE rooms ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    await db.execute("ALTER TABLE rooms ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+    await db.execute("ALTER TABLE rooms ADD COLUMN muted_until INTEGER");
+    await db.execute("ALTER TABLE rooms ADD COLUMN kind TEXT NOT NULL DEFAULT 'group'");
+    await db.execute("ALTER TABLE rooms ADD COLUMN dm_peer_id TEXT");
+    await db.execute('''
+      CREATE TABLE drafts(
+        room_id     TEXT PRIMARY KEY,
+        text        TEXT NOT NULL,
+        reply_to_id TEXT,
+        updated_at  INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE blocked_users(
+        user_id      TEXT PRIMARY KEY,
+        username     TEXT,
+        display_name TEXT,
+        avatar_url   TEXT,
+        created_at   INTEGER NOT NULL
+      )
+    ''');
   }
 }

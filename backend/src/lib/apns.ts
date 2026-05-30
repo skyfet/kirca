@@ -11,11 +11,20 @@ export type ApnsEnv = {
   APNS_HOST?: string;
 };
 
-type ApsPayload = {
+type Aps = {
   alert: { title: string; body: string };
   badge?: number;
   sound?: string;
   "thread-id"?: string;
+  // F12: when set, iOS wakes the Notification Service Extension so it can
+  // fetch + decrypt the E2E ciphertext before the banner is shown.
+  "mutable-content"?: 1;
+};
+
+// The full push payload: the reserved `aps` dictionary plus arbitrary
+// top-level data keys (e.g. room_id, msg_id) consumed by the NSE.
+type ApsPayload = Aps & {
+  [key: string]: unknown;
 };
 
 let cachedKey: CryptoKey | null = null;
@@ -100,6 +109,26 @@ export async function apnsSend(
   const host = env.APNS_HOST || "api.push.apple.com";
   const jwt = await getJwt(env);
 
+  // Split reserved aps keys from arbitrary top-level data keys. Apple requires
+  // alert/badge/sound/thread-id/mutable-content under `aps`; custom data (e.g.
+  // room_id, msg_id for the NSE) lives at the top level alongside `aps`.
+  const apsReserved = new Set([
+    "alert",
+    "badge",
+    "sound",
+    "thread-id",
+    "mutable-content",
+    "content-available",
+    "category",
+  ]);
+  const apsDict: Record<string, unknown> = {};
+  const topLevel: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(aps)) {
+    if (v === undefined) continue;
+    if (apsReserved.has(k)) apsDict[k] = v;
+    else topLevel[k] = v;
+  }
+
   const res = await fetch(`https://${host}/3/device/${deviceToken}`, {
     method: "POST",
     headers: {
@@ -109,7 +138,7 @@ export async function apnsSend(
       "apns-priority": "10",
       "content-type": "application/json",
     },
-    body: JSON.stringify({ aps }),
+    body: JSON.stringify({ ...topLevel, aps: apsDict }),
   });
 
   // 410 = Apple says token is dead, нужно удалить из БД.
