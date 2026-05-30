@@ -6,6 +6,7 @@ import 'package:web_socket_channel/status.dart' as ws_status;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../crypto/room_cipher.dart';
+import '../../util/e2e_envelope.dart';
 
 /// Reconnect backoff in seconds, picked by attempt index.
 const List<int> _kReconnectDelaysSec = [1, 2, 4, 8, 16, 30];
@@ -128,6 +129,8 @@ class ChatTransport {
     String? attachmentId,
     String? replyToId,
     List<String>? mentions,
+    String? attachmentBlurhash,
+    int? attachmentDurationMs,
   }) {
     if (cipher == null) {
       _sendPlain(
@@ -144,6 +147,8 @@ class ChatTransport {
         attachmentId: attachmentId,
         replyToId: replyToId,
         mentions: mentions,
+        attachmentBlurhash: attachmentBlurhash,
+        attachmentDurationMs: attachmentDurationMs,
       ));
     }
   }
@@ -171,9 +176,19 @@ class ChatTransport {
     String? attachmentId,
     String? replyToId,
     List<String>? mentions,
+    String? attachmentBlurhash,
+    int? attachmentDurationMs,
   }) async {
     try {
-      final enc = await cipher!.encryptMessage(text);
+      // E2E carries attachment metadata (blurhash, audio duration) inside the
+      // encrypted plaintext so the server never sees it. Text-only sends fall
+      // back to a raw string for backward compat with pre-envelope receivers.
+      final plaintext = encodeE2eEnvelope(
+        text: text,
+        blurhash: attachmentBlurhash,
+        durationMs: attachmentDurationMs,
+      );
+      final enc = await cipher!.encryptMessage(plaintext);
       _writeFrame({
         'type': 'msg',
         'client_id': clientId,

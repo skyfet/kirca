@@ -507,6 +507,12 @@ class Api {
     required int size,
     int? width,
     int? height,
+    // Plain-room metadata persisted server-side so receivers see the
+    // placeholder/duration without re-deriving. E2E uploads must NOT pass
+    // these — they ride inside the encrypted message envelope so the server
+    // never sees them.
+    String? blurhash,
+    int? durationMs,
     // E2E fields. When set, server skips the mime whitelist and stores wrapping
     // material so other members can decrypt.
     bool e2e = false,
@@ -521,6 +527,8 @@ class Api {
       'size': size,
       if (width != null) 'width': width,
       if (height != null) 'height': height,
+      if (!e2e && blurhash != null) 'blurhash': blurhash,
+      if (!e2e && durationMs != null) 'duration_ms': durationMs,
     };
     if (e2e) {
       body['e2e'] = true;

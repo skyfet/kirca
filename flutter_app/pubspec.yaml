@@ -24,8 +24,11 @@ dependencies:
   # F11 voice messages: recording + playback.
   record: ^5.1.2
   just_audio: ^0.9.42
-  # F10 image placeholders.
+  # F10 image placeholders: decode (flutter_blurhash) + encode (blurhash_dart
+  # needs pixel access from `image`).
   flutter_blurhash: ^0.8.2
+  blurhash_dart: ^1.2.1
+  image: ^4.2.0
 
 dev_dependencies:
   flutter_lints: ^4.0.0

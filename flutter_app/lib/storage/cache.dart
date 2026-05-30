@@ -609,11 +609,27 @@ class MessagesCache {
     String roomId,
     String id,
     String text,
-  ) async {
+  ) =>
+      setDecryptedMessage(roomId, id, text);
+
+  /// Like [setDecryptedText] but also propagates attachment metadata pulled
+  /// from the E2E envelope (blurhash, audio duration). Server never sees
+  /// these for E2E rooms — they only land here after a local decrypt.
+  static Future<void> setDecryptedMessage(
+    String roomId,
+    String id,
+    String text, {
+    String? blurhash,
+    int? durationMs,
+  }) async {
     final db = await AppDb.open();
     await db.update(
       'messages',
-      {'text': text},
+      {
+        'text': text,
+        if (blurhash != null) 'attachment_blurhash': blurhash,
+        if (durationMs != null) 'attachment_duration_ms': durationMs,
+      },
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -640,17 +656,26 @@ class MessagesCache {
     // would wipe the visible message bubble.
     String text = m['text']?.toString() ?? '';
     final ciphertext = m['ciphertext']?.toString();
-    if (ciphertext != null && text.isEmpty) {
+    // Preservation pulls locally-decrypted fields forward across server
+    // re-syncs (which carry empty text + null attachment metadata for E2E).
+    String? preservedBlurhash;
+    int? preservedDurationMs;
+    if (ciphertext != null) {
       final existing = await x.query(
         'messages',
-        columns: ['text'],
+        columns: ['text', 'attachment_blurhash', 'attachment_duration_ms'],
         where: 'id = ?',
         whereArgs: [id],
         limit: 1,
       );
       if (existing.isNotEmpty) {
-        final prev = existing.first['text'] as String?;
-        if (prev != null && prev.isNotEmpty) text = prev;
+        if (text.isEmpty) {
+          final prev = existing.first['text'] as String?;
+          if (prev != null && prev.isNotEmpty) text = prev;
+        }
+        preservedBlurhash = existing.first['attachment_blurhash'] as String?;
+        preservedDurationMs =
+            (existing.first['attachment_duration_ms'] as num?)?.toInt();
       }
     }
     // mentions: server sends a JSON array (or list); persist as JSON text.
@@ -712,8 +737,10 @@ class MessagesCache {
         'forwarded_from_msg_id': m['forwarded_from_msg_id']?.toString(),
         'forwarded_from_username': m['forwarded_from_username']?.toString(),
         'reactions': reactionsJson,
-        'attachment_blurhash': att?['blurhash']?.toString(),
-        'attachment_duration_ms': (att?['duration_ms'] as num?)?.toInt(),
+        'attachment_blurhash':
+            att?['blurhash']?.toString() ?? preservedBlurhash,
+        'attachment_duration_ms':
+            (att?['duration_ms'] as num?)?.toInt() ?? preservedDurationMs,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );

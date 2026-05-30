@@ -17,6 +17,7 @@ import '../storage/cache.dart';
 import '../storage/outbox.dart';
 import '../theme/app_background.dart';
 import '../theme/app_theme.dart';
+import '../util/e2e_envelope.dart';
 import '../util/uuid.dart';
 import 'chat/chat_input.dart';
 import 'chat/chat_row.dart';
@@ -514,6 +515,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       attachmentId: attachmentId,
       replyToId: replyToId,
       mentions: mentions,
+      // Plain rooms already persisted these server-side via reserveUpload;
+      // the transport ignores them. E2E rooms get them wrapped into the
+      // encrypted plaintext envelope so receivers see the placeholder/duration
+      // without leaking metadata to the server.
+      attachmentBlurhash: attPreview?.blurhash,
+      attachmentDurationMs: attPreview?.durationMs,
     );
   }
 
@@ -526,6 +533,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         text: p.text,
         attachmentId: p.attachment?.id,
         replyToId: p.replyToId,
+        attachmentBlurhash: p.attachment?.blurhash,
+        attachmentDurationMs: p.attachment?.durationMs,
       );
     }
   }
@@ -996,7 +1005,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       ciphertext: Uint8List.fromList(base64Decode(m.ciphertext!)),
     );
     if (plaintext == null) return; // wrong key version / not yet available
-    await MessagesCache.setDecryptedText(widget.roomId, m.id, plaintext);
+    final env = decodeE2eEnvelope(plaintext);
+    await MessagesCache.setDecryptedMessage(
+      widget.roomId,
+      m.id,
+      env.text,
+      blurhash: env.blurhash,
+      durationMs: env.durationMs,
+    );
   }
 
   // ---------------------------------------------------------------------------
