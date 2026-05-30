@@ -8,8 +8,10 @@ import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import '../api.dart';
 import '../state.dart';
 import '../storage/cache.dart';
-import '../theme/app_background.dart';
 import '../theme/app_theme.dart';
+import '../theme/design.dart';
+import '../widgets/app_button.dart';
+import '../widgets/app_scaffold.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({super.key});
@@ -146,34 +148,19 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
     final avatar = _profile?['avatar_url'] as String?;
-    return GlassPage(
-      background: const AppBackground(),
-      statusBarStyle: GlassStatusBarStyle.light,
-      edgeToEdge: true,
-      child: AdaptiveLiquidGlassLayer(
-        clipBehavior: Clip.none,
-        child: Scaffold(
-        backgroundColor: Colors.transparent,
-        extendBodyBehindAppBar: true,
-        appBar: GlassAppBar(
-          leading: Padding(
-            padding: const EdgeInsets.only(left: 8),
-            child: GlassIconButton(
-              size: 36,
-              icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.onGlass, size: 18),
-              onPressed: () => Navigator.pop(context),
-            ),
-          ),
-          title: const Text(
-            'Профиль',
-            style: TextStyle(color: AppColors.onGlass, fontSize: 18, fontWeight: FontWeight.w700),
-          ),
-        ),
-        body: SafeArea(
+    return AppScaffold(
+      glass: false,
+      extendBody: false,
+      appBar: const GlassAppBar(
+        centerTitle: false,
+        title: Text('Профиль', style: AppType.title),
+      ),
+      body: SafeArea(
           child: _profile == null
               ? const Center(child: GlassProgressIndicator.circular(size: 28))
               : ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                  padding: const EdgeInsets.fromLTRB(
+                      AppSpace.lg, AppSpace.md, AppSpace.lg, AppSpace.xxl),
                   children: [
                     Center(
                       child: GestureDetector(
@@ -243,32 +230,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             height: 36,
                             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
                           ),
-                          const SizedBox(height: 12),
-                          GlassButton.custom(
-                            onTap: _saving ? () {} : _saveDisplayName,
-                            width: double.infinity,
-                            height: 44,
-                            glowColor: AppColors.accent,
-                            useOwnLayer: true,
-                            shape: LiquidRoundedSuperellipse(borderRadius: 12),
-                            child: Center(
-                              child: _saving
-                                  ? const SizedBox(
-                                      width: 18,
-                                      height: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: AppColors.onGlass,
-                                      ),
-                                    )
-                                  : const Text(
-                                      'Сохранить',
-                                      style: TextStyle(
-                                        color: AppColors.onGlass,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                            ),
+                          const SizedBox(height: AppSpace.md),
+                          AppButton.primary(
+                            label: 'Сохранить',
+                            busy: _saving,
+                            height: AppSize.compactButtonHeight,
+                            onTap: _saveDisplayName,
                           ),
                         ],
                       ),
@@ -281,66 +248,28 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                         ),
                       ),
                     ),
-                    const SizedBox(height: 24),
-                    GlassButton.custom(
-                      onTap: _logoutAll,
-                      width: double.infinity,
-                      height: 44,
-                      useOwnLayer: true,
-                      shape: LiquidRoundedSuperellipse(borderRadius: 12),
-                      child: const Center(
-                        child: Text(
-                          'Выйти со всех устройств',
-                          style: TextStyle(color: AppColors.onGlass),
-                        ),
-                      ),
+                    const SizedBox(height: AppSpace.xxl),
+                    AppButton.secondary(
+                      label: 'Выйти',
+                      icon: Icons.logout,
+                      height: AppSize.compactButtonHeight,
+                      onTap: () => ref.read(authProvider.notifier).logout(),
                     ),
-                    const SizedBox(height: 10),
-                    DecoratedBox(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: const [
-                          BoxShadow(
-                            color: Color(0x40FF5C7A),
-                            blurRadius: 18,
-                          ),
-                        ],
-                      ),
-                      child: Material(
-                        color: Colors.transparent,
-                        borderRadius: BorderRadius.circular(12),
-                        child: InkWell(
-                          onTap: _delete,
-                          borderRadius: BorderRadius.circular(12),
-                          child: Ink(
-                            height: 44,
-                            decoration: BoxDecoration(
-                              color: Colors.transparent,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: const Color(0x66FF5C7A),
-                                width: 1,
-                              ),
-                            ),
-                            child: const Center(
-                              child: Text(
-                                'Удалить аккаунт',
-                                style: TextStyle(
-                                  color: AppColors.danger,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
+                    const SizedBox(height: AppSpace.sm),
+                    AppButton.secondary(
+                      label: 'Выйти со всех устройств',
+                      height: AppSize.compactButtonHeight,
+                      onTap: _logoutAll,
+                    ),
+                    const SizedBox(height: AppSpace.lg),
+                    AppButton.danger(
+                      label: 'Удалить аккаунт',
+                      height: AppSize.compactButtonHeight,
+                      onTap: _delete,
                     ),
                   ],
                 ),
         ),
-        ),
-      ),
     );
   }
 }
@@ -425,52 +354,33 @@ class _BlockedUsersScreenState extends ConsumerState<BlockedUsersScreen> {
   @override
   Widget build(BuildContext context) {
     final blocked = ref.watch(blockedUsersProvider);
-    return GlassPage(
-      background: const AppBackground(),
-      statusBarStyle: GlassStatusBarStyle.light,
-      edgeToEdge: true,
-      child: AdaptiveLiquidGlassLayer(
-        clipBehavior: Clip.none,
-        child: Scaffold(
-          backgroundColor: Colors.transparent,
-          extendBodyBehindAppBar: true,
-          appBar: GlassAppBar(
-            leading: Padding(
-              padding: const EdgeInsets.only(left: 8),
-              child: GlassIconButton(
-                size: 36,
-                icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.onGlass, size: 18),
-                onPressed: () => Navigator.pop(context),
-              ),
-            ),
-            title: const Text(
-              'Заблокированные',
-              style: TextStyle(color: AppColors.onGlass, fontSize: 18, fontWeight: FontWeight.w700),
-            ),
+    return AppScaffold(
+      appBar: const GlassAppBar(
+        centerTitle: false,
+        title: Text('Заблокированные', style: AppType.title),
+      ),
+      body: SafeArea(
+        child: blocked.when(
+          loading: () => const Center(child: GlassProgressIndicator.circular(size: 28)),
+          error: (e, _) => Center(
+            child: Text('$e', style: const TextStyle(color: AppColors.onGlassMuted)),
           ),
-          body: SafeArea(
-            child: blocked.when(
-              loading: () => const Center(child: GlassProgressIndicator.circular(size: 28)),
-              error: (e, _) => Center(
-                child: Text('$e', style: const TextStyle(color: AppColors.onGlassMuted)),
+          data: (users) {
+            if (users.isEmpty) {
+              return const _BlockedEmptyState();
+            }
+            return ListView.separated(
+              padding: const EdgeInsets.fromLTRB(
+                  AppSpace.lg, AppSpace.md, AppSpace.lg, AppSpace.xxl),
+              itemCount: users.length,
+              separatorBuilder: (_, __) => const SizedBox(height: AppSpace.sm),
+              itemBuilder: (_, i) => _BlockedUserTile(
+                user: users[i],
+                busy: _pending.contains(users[i].userId),
+                onUnblock: () => _unblock(users[i]),
               ),
-              data: (users) {
-                if (users.isEmpty) {
-                  return const _BlockedEmptyState();
-                }
-                return ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                  itemCount: users.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 10),
-                  itemBuilder: (_, i) => _BlockedUserTile(
-                    user: users[i],
-                    busy: _pending.contains(users[i].userId),
-                    onUnblock: () => _unblock(users[i]),
-                  ),
-                );
-              },
-            ),
-          ),
+            );
+          },
         ),
       ),
     );

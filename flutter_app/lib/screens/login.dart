@@ -5,8 +5,10 @@ import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import '../api.dart';
 import '../crypto/setup.dart';
 import '../state.dart';
-import '../theme/app_background.dart';
 import '../theme/app_theme.dart';
+import '../theme/design.dart';
+import '../widgets/app_button.dart';
+import '../widgets/app_scaffold.dart';
 import 'recovery_phrase.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -119,21 +121,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return GlassPage(
-      background: const AppBackground(),
-      statusBarStyle: GlassStatusBarStyle.light,
-      edgeToEdge: true,
-      child: AdaptiveLiquidGlassLayer(
-        clipBehavior: Clip.none,
-        child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: SafeArea(
+    return AppScaffold(
+      extendBodyBehindAppBar: false,
+      extendBody: false,
+      body: SafeArea(
           child: Center(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpace.xxl, vertical: AppSpace.xxl),
               child: GlassCard(
-                padding: const EdgeInsets.all(24),
-                shape: const LiquidRoundedSuperellipse(borderRadius: 18),
+                padding: const EdgeInsets.all(AppSpace.xxl),
+                shape: AppRadius.glassLg,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   mainAxisSize: MainAxisSize.min,
@@ -141,26 +139,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     const Text(
                       'Kirca',
                       textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 30,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.4,
-                        color: AppColors.onGlass,
-                      ),
+                      style: AppType.display,
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: AppSpace.xs),
                     const Text(
                       'тихий чат',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: AppColors.onGlassMuted, fontSize: 13),
+                      style: AppType.bodyMuted,
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: AppSpace.xxl),
                     GlassSegmentedControl(
                       segments: const ['Вход', 'Регистрация'],
                       selectedIndex: _mode,
                       onSegmentSelected: (i) => setState(() => _mode = i),
                     ),
-                    const SizedBox(height: 20),
+                    const SizedBox(height: AppSpace.xl),
                     GlassTextField(
                       controller: _u,
                       placeholder: 'Имя пользователя',
@@ -168,63 +161,37 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       autofocus: true,
                       textInputAction: TextInputAction.next,
                       height: 36,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                      padding: const EdgeInsets.symmetric(horizontal: AppSpace.md, vertical: 0),
                     ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: AppSpace.sm),
                     GlassPasswordField(
                       controller: _p,
                       placeholder: 'Пароль',
                       textInputAction: TextInputAction.done,
                       onSubmitted: (_) => _submit(),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: AppSpace.md, vertical: AppSpace.sm),
                     ),
                     if (_err != null) ...[
-                      const SizedBox(height: 12),
+                      const SizedBox(height: AppSpace.md),
                       Text(
                         _err!,
                         textAlign: TextAlign.center,
                         style: const TextStyle(color: AppColors.danger),
                       ),
                     ],
-                    const SizedBox(height: 20),
-                    GlassButton.custom(
-                      onTap: _busy ? () {} : _submit,
-                      width: double.infinity,
-                      height: 48,
-                      glowColor: AppColors.accent,
-                      useOwnLayer: true,
-                      shape: LiquidRoundedSuperellipse(borderRadius: 14),
-                      child: Center(
-                        child: _busy
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: AppColors.onGlass,
-                                ),
-                              )
-                            : Text(
-                                _isRegister ? 'Создать аккаунт' : 'Войти',
-                                style: const TextStyle(
-                                  color: AppColors.onGlass,
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 15,
-                                ),
-                              ),
-                      ),
+                    const SizedBox(height: AppSpace.xl),
+                    AppButton.primary(
+                      label: _isRegister ? 'Создать аккаунт' : 'Войти',
+                      busy: _busy,
+                      onTap: _submit,
                     ),
                     if (_isRegister) ...[
-                      const SizedBox(height: 14),
+                      const SizedBox(height: AppSpace.md),
                       const Text(
                         'после регистрации ты получишь фразу для '
                         'восстановления — сохрани её',
                         textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: AppColors.onGlassDim,
-                          fontSize: 11,
-                          height: 1.4,
-                        ),
+                        style: AppType.fine,
                       ),
                     ],
                   ],
@@ -232,8 +199,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               ),
             ),
           ),
-        ),
-        ),
       ),
     );
   }

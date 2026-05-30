@@ -10,7 +10,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'state.dart';
 import 'screens/login.dart';
-import 'screens/rooms.dart';
+import 'screens/home_shell.dart';
 import 'theme/app_theme.dart';
 import 'ws/user_ws.dart';
 
@@ -75,7 +75,7 @@ class App extends ConsumerWidget {
       title: 'Kirca',
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),
-      home: auth == null ? const LoginScreen() : const RoomsScreen(),
+      home: auth == null ? const LoginScreen() : const HomeShell(),
     );
   }
 }

@@ -10,12 +10,13 @@ import '../crypto/key_store.dart';
 import '../crypto/room_keys.dart';
 import '../state.dart';
 import '../storage/cache.dart';
-import '../theme/app_background.dart';
 import '../theme/app_theme.dart';
+import '../theme/design.dart';
+import '../widgets/app_button.dart';
+import '../widgets/app_scaffold.dart';
+import '../widgets/tappable_card.dart';
 import '../ws/user_ws.dart';
 import 'chat.dart';
-import 'friends.dart';
-import 'profile.dart';
 
 class RoomsScreen extends ConsumerStatefulWidget {
   const RoomsScreen({super.key});
@@ -45,15 +46,8 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text(
-                    'Новая комната',
-                    style: TextStyle(
-                      color: AppColors.onGlass,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
+                  const Text('Новая комната', style: AppType.heading),
+                  const SizedBox(height: AppSpace.lg),
                   GlassTextField(
                     controller: ctrl,
                     placeholder: 'Название',
@@ -108,38 +102,18 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
                   Row(
                     children: [
                       Expanded(
-                        child: GlassButton.custom(
+                        child: AppButton.secondary(
+                          label: 'Отмена',
+                          height: AppSize.compactButtonHeight,
                           onTap: () => Navigator.pop(ctx, false),
-                          height: 42,
-                          width: double.infinity,
-                          useOwnLayer: true,
-                          shape: LiquidRoundedSuperellipse(borderRadius: 12),
-                          child: const Center(
-                            child: Text(
-                              'Отмена',
-                              style: TextStyle(color: AppColors.onGlass),
-                            ),
-                          ),
                         ),
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: AppSpace.sm),
                       Expanded(
-                        child: GlassButton.custom(
+                        child: AppButton.primary(
+                          label: 'Создать',
+                          height: AppSize.compactButtonHeight,
                           onTap: () => Navigator.pop(ctx, true),
-                          glowColor: AppColors.accent,
-                          height: 42,
-                          width: double.infinity,
-                          useOwnLayer: true,
-                          shape: LiquidRoundedSuperellipse(borderRadius: 12),
-                          child: const Center(
-                            child: Text(
-                              'Создать',
-                              style: TextStyle(
-                                color: AppColors.onGlass,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
                         ),
                       ),
                     ],
@@ -213,124 +187,68 @@ class _RoomsScreenState extends ConsumerState<RoomsScreen> {
     final roomsAsync = ref.watch(sortedRoomsProvider);
     final archivedAsync = ref.watch(archivedRoomsProvider);
     final archivedCount = archivedAsync.valueOrNull?.length ?? 0;
-    final invitesAsync = ref.watch(invitesProvider);
-    final friendReqAsync = ref.watch(friendRequestsProvider);
-    final pendingCount = (invitesAsync.valueOrNull?.length ?? 0) +
-        (friendReqAsync.valueOrNull?.length ?? 0);
     final connected = ref.watch(userWsConnectedProvider).valueOrNull ?? false;
 
-    return GlassPage(
-      background: const AppBackground(),
-      statusBarStyle: GlassStatusBarStyle.light,
-      edgeToEdge: true,
-      child: AdaptiveLiquidGlassLayer(
-        clipBehavior: Clip.none,
-        child: Scaffold(
-        backgroundColor: Colors.transparent,
-        extendBodyBehindAppBar: true,
-        extendBody: true,
-        appBar: GlassAppBar(
-          centerTitle: false,
-          title: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Комнаты',
-                style: TextStyle(
-                  color: AppColors.onGlass,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(width: 8),
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: connected ? const Color(0xFF34D399) : const Color(0xFFFF8A65),
-                  boxShadow: connected
-                      ? [
-                          BoxShadow(
-                            color: const Color(0xFF34D399).withOpacity(0.6),
-                            blurRadius: 6,
-                          ),
-                        ]
-                      : null,
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            GlassIconButton(
-              size: 36,
-              icon: pendingCount > 0
-                  ? GlassBadge(
-                      count: pendingCount,
-                      backgroundColor: AppColors.accent,
-                      child: const Icon(Icons.people_alt_outlined,
-                          color: AppColors.onGlass),
-                    )
-                  : const Icon(Icons.people_alt_outlined,
-                      color: AppColors.onGlass),
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const FriendsScreen()),
+    return AppScaffold(
+      glass: false,
+      appBar: GlassAppBar(
+        centerTitle: false,
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Комнаты', style: AppType.title),
+            const SizedBox(width: AppSpace.sm),
+            AnimatedContainer(
+              duration: AppMotion.base,
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: connected ? const Color(0xFF34D399) : const Color(0xFFFF8A65),
+                boxShadow: connected
+                    ? [
+                        BoxShadow(
+                          color: const Color(0xFF34D399).withOpacity(0.6),
+                          blurRadius: 6,
+                        ),
+                      ]
+                    : null,
               ),
             ),
-            const SizedBox(width: 4),
-            GlassIconButton(
-              size: 36,
-              icon: const Icon(Icons.account_circle_outlined, color: AppColors.onGlass),
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const ProfileScreen()),
-              ),
-            ),
-            const SizedBox(width: 4),
-            GlassIconButton(
-              size: 36,
-              icon: const Icon(Icons.logout, color: AppColors.onGlass),
-              onPressed: () => ref.read(authProvider.notifier).logout(),
-            ),
-            const SizedBox(width: 8),
           ],
         ),
-        floatingActionButton: GlassButton(
-          icon: const Icon(Icons.add, color: AppColors.onGlass),
-          onTap: _newRoom,
-          width: 56,
-          height: 56,
-          glowColor: AppColors.accent,
-          useOwnLayer: true,
-          shape: const LiquidRoundedSuperellipse(borderRadius: 18),
-        ),
-        body: SafeArea(
-          child: Column(
-            children: [
+      ),
+      floatingActionButton: GlassButton(
+        icon: const Icon(Icons.add, color: AppColors.onGlass),
+        onTap: _newRoom,
+        width: AppSize.fab,
+        height: AppSize.fab,
+        glowColor: AppColors.accent,
+        useOwnLayer: true,
+        shape: AppRadius.glassLg,
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                  AppSpace.md, AppSpace.xs, AppSpace.md, AppSpace.sm),
+              child: GlassSearchBar(
+                placeholder: 'Поиск по комнатам',
+                onChanged: (v) => setState(() => _query = v.trim().toLowerCase()),
+              ),
+            ),
+            if (auth != null)
               Padding(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-                child: GlassSearchBar(
-                  placeholder: 'Поиск по комнатам',
-                  onChanged: (v) => setState(() => _query = v.trim().toLowerCase()),
+                padding: const EdgeInsets.fromLTRB(
+                    AppSpace.md, 0, AppSpace.md, AppSpace.xs),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('@${auth.username}', style: AppType.caption),
                 ),
               ),
-              if (auth != null)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      '@${auth.username}',
-                      style: const TextStyle(color: AppColors.onGlassDim, fontSize: 12),
-                    ),
-                  ),
-                ),
-              Expanded(child: _body(roomsAsync, archivedCount)),
-            ],
-          ),
-        ),
+            Expanded(child: _body(roomsAsync, archivedCount)),
+          ],
         ),
       ),
     );
@@ -429,29 +347,10 @@ class _RoomTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final radius = BorderRadius.circular(14);
-    return Stack(
-      children: [
-        GlassCard(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: RoomTileContent(room: room),
-        ),
-        Positioned.fill(
-          child: Material(
-            color: Colors.transparent,
-            borderRadius: radius,
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: () => _openChat(context),
-              onLongPress: () => _showActions(context, ref),
-              borderRadius: radius,
-              splashColor: const Color(0x1FFFFFFF),
-              highlightColor: const Color(0x0FFFFFFF),
-              hoverColor: const Color(0x0AFFFFFF),
-            ),
-          ),
-        ),
-      ],
+    return TappableCard(
+      onTap: () => _openChat(context),
+      onLongPress: () => _showActions(context, ref),
+      child: RoomTileContent(room: room),
     );
   }
 
@@ -638,55 +537,26 @@ class _ArchivedEntryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final radius = BorderRadius.circular(14);
-    return Stack(
-      children: [
-        GlassCard(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Row(
-            children: [
-              CircleAvatar(
-                radius: 22,
-                backgroundColor: AppColors.blobIndigo.withOpacity(0.35),
-                child: const Icon(Icons.archive_outlined,
-                    color: AppColors.onGlass, size: 20),
-              ),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  'Архив',
-                  style: TextStyle(
-                    color: AppColors.onGlass,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              Text('$count',
-                  style: const TextStyle(
-                      color: AppColors.onGlassDim, fontSize: 13)),
-              const SizedBox(width: 4),
-              const Icon(Icons.chevron_right, color: AppColors.onGlassDim),
-            ],
+    return TappableCard(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const ArchivedRoomsScreen()),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 22,
+            backgroundColor: AppColors.blobIndigo.withOpacity(0.35),
+            child: const Icon(Icons.archive_outlined,
+                color: AppColors.onGlass, size: 20),
           ),
-        ),
-        Positioned.fill(
-          child: Material(
-            color: Colors.transparent,
-            borderRadius: radius,
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const ArchivedRoomsScreen()),
-              ),
-              borderRadius: radius,
-              splashColor: const Color(0x1FFFFFFF),
-              highlightColor: const Color(0x0FFFFFFF),
-            ),
-          ),
-        ),
-      ],
+          const SizedBox(width: AppSpace.md),
+          const Expanded(child: Text('Архив', style: AppType.itemTitle)),
+          Text('$count', style: AppType.bodyMuted),
+          const SizedBox(width: AppSpace.xs),
+          const Icon(Icons.chevron_right, color: AppColors.onGlassDim),
+        ],
+      ),
     );
   }
 }
@@ -699,52 +569,35 @@ class ArchivedRoomsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final archivedAsync = ref.watch(archivedRoomsProvider);
-    return GlassPage(
-      background: const AppBackground(),
-      statusBarStyle: GlassStatusBarStyle.light,
-      edgeToEdge: true,
-      child: AdaptiveLiquidGlassLayer(
-        clipBehavior: Clip.none,
-        child: Scaffold(
-          backgroundColor: Colors.transparent,
-          extendBodyBehindAppBar: true,
-          extendBody: true,
-          appBar: const GlassAppBar(
-            centerTitle: false,
-            title: Text(
-              'Архив',
-              style: TextStyle(
-                color: AppColors.onGlass,
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
+    return AppScaffold(
+      appBar: const GlassAppBar(
+        centerTitle: false,
+        title: Text('Архив', style: AppType.title),
+      ),
+      body: SafeArea(
+        child: archivedAsync.when(
+          loading: () =>
+              const Center(child: GlassProgressIndicator.circular(size: 28)),
+          error: (e, _) => Center(
+            child: Text('$e', style: const TextStyle(color: AppColors.danger)),
           ),
-          body: SafeArea(
-            child: archivedAsync.when(
-              loading: () =>
-                  const Center(child: GlassProgressIndicator.circular(size: 28)),
-              error: (e, _) => Center(
-                child: Text('$e', style: const TextStyle(color: AppColors.danger)),
+          data: (rooms) {
+            if (rooms.isEmpty) {
+              return const Center(
+                child: Text('Архив пуст.',
+                    style: TextStyle(color: AppColors.onGlassMuted)),
+              );
+            }
+            return ListView.builder(
+              padding: const EdgeInsets.fromLTRB(
+                  AppSpace.md, AppSpace.sm, AppSpace.md, AppSpace.xxl),
+              itemCount: rooms.length,
+              itemBuilder: (_, i) => Padding(
+                padding: const EdgeInsets.only(bottom: AppSpace.sm),
+                child: _RoomTile(room: rooms[i]),
               ),
-              data: (rooms) {
-                if (rooms.isEmpty) {
-                  return const Center(
-                    child: Text('Архив пуст.',
-                        style: TextStyle(color: AppColors.onGlassMuted)),
-                  );
-                }
-                return ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
-                  itemCount: rooms.length,
-                  itemBuilder: (_, i) => Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: _RoomTile(room: rooms[i]),
-                  ),
-                );
-              },
-            ),
-          ),
+            );
+          },
         ),
       ),
     );
@@ -795,11 +648,7 @@ class RoomTileContent extends StatelessWidget {
                       roomDisplayName(room),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.onGlass,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                      ),
+                      style: AppType.itemTitle,
                     ),
                   ),
                   if (room.muted)

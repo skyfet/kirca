@@ -6,8 +6,9 @@ import '../api.dart';
 import '../services/room_invite.dart';
 import '../state.dart';
 import '../storage/cache.dart';
-import '../theme/app_background.dart';
 import '../theme/app_theme.dart';
+import '../theme/design.dart';
+import '../widgets/app_scaffold.dart';
 import 'chat.dart';
 
 /// Combined "Друзья" screen — three tabs in one place:
@@ -396,76 +397,51 @@ class _FriendsScreenState extends ConsumerState<FriendsScreen>
     final requestsCount = requestsAsync.valueOrNull?.length ?? 0;
     final invitesCount = invitesAsync.valueOrNull?.length ?? 0;
 
-    return GlassPage(
-      background: const AppBackground(),
-      statusBarStyle: GlassStatusBarStyle.light,
-      edgeToEdge: true,
-      child: AdaptiveLiquidGlassLayer(
-        clipBehavior: Clip.none,
-        child: Scaffold(
-          backgroundColor: Colors.transparent,
-          extendBodyBehindAppBar: true,
-          extendBody: true,
-          appBar: GlassAppBar(
-            leading: Padding(
-              padding: const EdgeInsets.only(left: 8),
-              child: GlassIconButton(
-                size: 36,
-                icon: const Icon(Icons.arrow_back_ios_new,
-                    color: AppColors.onGlass, size: 18),
-                onPressed: () => Navigator.pop(context),
+    return AppScaffold(
+      glass: false,
+      appBar: const GlassAppBar(
+        centerTitle: false,
+        title: Text('Друзья', style: AppType.title),
+      ),
+      floatingActionButton: GlassButton(
+        icon: const Icon(Icons.person_add_alt_1, color: AppColors.onGlass),
+        onTap: _addFriend,
+        width: AppSize.fab,
+        height: AppSize.fab,
+        glowColor: AppColors.accent,
+        useOwnLayer: true,
+        shape: AppRadius.glassLg,
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                  AppSpace.md, AppSpace.xs, AppSpace.md, AppSpace.xs),
+              child: TabBar(
+                controller: _tabs,
+                labelColor: AppColors.onGlass,
+                unselectedLabelColor: AppColors.onGlassMuted,
+                indicatorColor: AppColors.accent,
+                indicatorSize: TabBarIndicatorSize.label,
+                tabs: [
+                  const Tab(text: 'Друзья'),
+                  _tabWithBadge('Запросы', requestsCount),
+                  _tabWithBadge('Приглашения', invitesCount),
+                ],
               ),
             ),
-            title: const Text(
-              'Друзья',
-              style: TextStyle(
-                color: AppColors.onGlass,
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
+            Expanded(
+              child: TabBarView(
+                controller: _tabs,
+                children: [
+                  _friendsList(friendsAsync, blockedIds),
+                  _requestsList(requestsAsync, blockedIds),
+                  _invitesList(invitesAsync),
+                ],
               ),
             ),
-            actions: const [SizedBox(width: 8)],
-          ),
-          floatingActionButton: GlassButton(
-            icon: const Icon(Icons.person_add_alt_1, color: AppColors.onGlass),
-            onTap: _addFriend,
-            width: 56,
-            height: 56,
-            glowColor: AppColors.accent,
-            useOwnLayer: true,
-            shape: const LiquidRoundedSuperellipse(borderRadius: 18),
-          ),
-          body: SafeArea(
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-                  child: TabBar(
-                    controller: _tabs,
-                    labelColor: AppColors.onGlass,
-                    unselectedLabelColor: AppColors.onGlassMuted,
-                    indicatorColor: AppColors.accent,
-                    indicatorSize: TabBarIndicatorSize.label,
-                    tabs: [
-                      const Tab(text: 'Друзья'),
-                      _tabWithBadge('Запросы', requestsCount),
-                      _tabWithBadge('Приглашения', invitesCount),
-                    ],
-                  ),
-                ),
-                Expanded(
-                  child: TabBarView(
-                    controller: _tabs,
-                    children: [
-                      _friendsList(friendsAsync, blockedIds),
-                      _requestsList(requestsAsync, blockedIds),
-                      _invitesList(invitesAsync),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
+          ],
         ),
       ),
     );
