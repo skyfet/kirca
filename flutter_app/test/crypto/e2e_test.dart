@@ -90,6 +90,84 @@ void main() {
     });
   });
 
+  group('DM pairing key', () {
+    test('both peers derive the IDENTICAL key (symmetry)', () async {
+      final alice = await E2E.generateIdentity();
+      final bob = await E2E.generateIdentity();
+
+      final aliceSide = await E2E.deriveDmKey(
+        myPrivateKey: alice.privateKey,
+        myPublicKey: alice.publicKey,
+        peerPublicKey: bob.publicKey,
+      );
+      final bobSide = await E2E.deriveDmKey(
+        myPrivateKey: bob.privateKey,
+        myPublicKey: bob.publicKey,
+        peerPublicKey: alice.publicKey,
+      );
+
+      expect(aliceSide.length, 32);
+      expect(aliceSide, bobSide);
+    });
+
+    test('derivation is deterministic across calls', () async {
+      final alice = await E2E.generateIdentity();
+      final bob = await E2E.generateIdentity();
+      final first = await E2E.deriveDmKey(
+        myPrivateKey: alice.privateKey,
+        myPublicKey: alice.publicKey,
+        peerPublicKey: bob.publicKey,
+      );
+      final second = await E2E.deriveDmKey(
+        myPrivateKey: alice.privateKey,
+        myPublicKey: alice.publicKey,
+        peerPublicKey: bob.publicKey,
+      );
+      expect(first, second);
+    });
+
+    test('different peer pairs derive different keys', () async {
+      final alice = await E2E.generateIdentity();
+      final bob = await E2E.generateIdentity();
+      final carol = await E2E.generateIdentity();
+
+      final ab = await E2E.deriveDmKey(
+        myPrivateKey: alice.privateKey,
+        myPublicKey: alice.publicKey,
+        peerPublicKey: bob.publicKey,
+      );
+      final ac = await E2E.deriveDmKey(
+        myPrivateKey: alice.privateKey,
+        myPublicKey: alice.publicKey,
+        peerPublicKey: carol.publicKey,
+      );
+      expect(ab, isNot(equals(ac)));
+    });
+
+    test('a message encrypted by one peer decrypts for the other', () async {
+      final alice = await E2E.generateIdentity();
+      final bob = await E2E.generateIdentity();
+
+      final aliceKey = await E2E.deriveDmKey(
+        myPrivateKey: alice.privateKey,
+        myPublicKey: alice.publicKey,
+        peerPublicKey: bob.publicKey,
+      );
+      final bobKey = await E2E.deriveDmKey(
+        myPrivateKey: bob.privateKey,
+        myPublicKey: bob.publicKey,
+        peerPublicKey: alice.publicKey,
+      );
+
+      const plaintext = 'парный ключ работает 🔑';
+      final cipher =
+          await E2E.encryptMessage(roomKey: aliceKey, plaintext: plaintext);
+      final decrypted =
+          await E2E.decryptMessage(roomKey: bobKey, cipher: cipher);
+      expect(decrypted, plaintext);
+    });
+  });
+
   group('Message encryption', () {
     test('round-trip plaintext', () async {
       final roomKey = E2E.newRoomKey();

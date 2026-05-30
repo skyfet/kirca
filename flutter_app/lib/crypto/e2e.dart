@@ -167,6 +167,57 @@ class E2E {
     );
   }
 
+  // ---- DM pairing key (deterministic, derived from both identities) ------
+
+  /// Derive the symmetric AES-256 key for a 1:1 (DM) room straight from the
+  /// two members' X25519 identity keys — no sealed envelope, no server
+  /// round-trip, no "one side holds the key" race.
+  ///
+  /// Both peers compute the identical key because:
+  ///   * the X25519 shared secret is symmetric:
+  ///       X25519(myPriv, peerPub) == X25519(peerPriv, myPub)
+  ///   * the HKDF salt is the two public keys in a canonical (sorted) order,
+  ///     so it doesn't matter which side is "me".
+  ///
+  /// Requires the peer to have published their identity public key; callers
+  /// that can't fetch it should treat the DM key as unavailable (the user
+  /// needs E2E set up on both ends first).
+  static Future<Uint8List> deriveDmKey({
+    required Uint8List myPrivateKey,
+    required Uint8List myPublicKey,
+    required Uint8List peerPublicKey,
+  }) async {
+    final kp = SimpleKeyPairData(
+      myPrivateKey,
+      publicKey: SimplePublicKey(myPublicKey, type: KeyPairType.x25519),
+      type: KeyPairType.x25519,
+    );
+    final shared = await _x25519.sharedSecretKey(
+      keyPair: kp,
+      remotePublicKey: SimplePublicKey(peerPublicKey, type: KeyPairType.x25519),
+    );
+    final lo = _compareBytes(myPublicKey, peerPublicKey) <= 0;
+    final salt = <int>[
+      ...(lo ? myPublicKey : peerPublicKey),
+      ...(lo ? peerPublicKey : myPublicKey),
+    ];
+    return _hkdf(
+      ikm: await shared.extractBytes(),
+      salt: salt,
+      info: utf8.encode('kirca-dm-pairing-v1'),
+      outLen: 32,
+    );
+  }
+
+  /// Lexicographic compare of two byte strings. Returns <0, 0, or >0.
+  static int _compareBytes(Uint8List a, Uint8List b) {
+    final n = a.length < b.length ? a.length : b.length;
+    for (var i = 0; i < n; i++) {
+      if (a[i] != b[i]) return a[i] - b[i];
+    }
+    return a.length - b.length;
+  }
+
   // ---- message encryption ------------------------------------------------
 
   static Future<MessageCipher> encryptMessage({

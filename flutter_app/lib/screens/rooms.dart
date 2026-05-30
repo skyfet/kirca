@@ -411,6 +411,11 @@ class _RoomTile extends ConsumerWidget {
   const _RoomTile({required this.room});
 
   void _openChat(BuildContext context) {
+    // DMs derive their key from the peer's identity — make sure the peer is
+    // registered so the cipher can resolve the pairing key on first use.
+    if (room.isDm) {
+      RoomKeyCache.registerDm(room.id, room.dmPeerId);
+    }
     Navigator.push(
       context,
       MaterialPageRoute(

@@ -3,7 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../api.dart';
-import '../services/room_invite.dart';
+import '../crypto/key_store.dart';
+import '../crypto/room_keys.dart';
 import '../state.dart';
 import '../storage/cache.dart';
 import '../theme/app_background.dart';
@@ -86,19 +87,24 @@ class _FriendsScreenState extends ConsumerState<FriendsScreen>
         displayName: r.fromDisplayName,
         avatarUrl: r.fromAvatarUrl,
       );
-      // F20: the server has auto-created the E2E DM room for this friendship
-      // but hasn't sealed any room keys. We accepted, so we're the one holding
-      // the key — seal it for both members. The friendship already stands;
-      // sealing failures are surfaced softly.
+      // F20: the server auto-creates the E2E DM room for this friendship. Its
+      // key is a *pairing key* derived from both members' identities — there's
+      // nothing to seal or publish; each side derives it independently. Warm it
+      // up so the chat opens ready to write.
       await _pairDmKeys(api, auth.userId, r.fromUserId);
     } catch (e) {
       _toast('$e');
     }
   }
 
-  /// F20: find the freshly-provisioned DM room for [friendId] and seal its key
-  /// for both members. Refreshes the rooms cache first so the just-created DM
-  /// room is visible even if the `room_added` WS event hasn't landed yet.
+  /// F20: find the freshly-provisioned DM room for [friendId] and warm up its
+  /// pairing key. Refreshes the rooms cache first so the just-created DM room
+  /// is visible even if the `room_added` WS event hasn't landed yet.
+  ///
+  /// Unlike group rooms, a DM key is *derived* from both identities — there's
+  /// no envelope to publish, so this just registers the peer and triggers a
+  /// derivation. A missing local identity is the only soft-failure worth
+  /// surfacing (the user hasn't set up E2E yet).
   Future<void> _pairDmKeys(Api api, String myUserId, String friendId) async {
     try {
       // Refresh rooms so the new DM room is present (accept() awaits server-side
@@ -116,27 +122,18 @@ class _FriendsScreenState extends ConsumerState<FriendsScreen>
       final dm = await _findDmRoom(friendId);
       if (dm == null) {
         // No DM room yet (e.g. server lag / older friendship). Non-destructive:
-        // the peer or a later refresh can seal; just note it.
+        // it'll derive on first open after a later refresh.
         _toast('Личный чат появится чуть позже');
         return;
       }
 
-      final result = await RoomInviteService(api).sealDmKeyForFriendship(
-        dmRoomId: dm.id,
-        keyVersion: dm.keyVersion == 0 ? 1 : dm.keyVersion,
-        myUserId: myUserId,
-        friendUserId: friendId,
-      );
-      switch (result) {
-        case DmKeyPairingResult.noLocalIdentity:
-          _toast('Настрой ключи шифрования в профиле, чтобы писать сообщения');
-          break;
-        case DmKeyPairingResult.sealedForSelfOnly:
-        case DmKeyPairingResult.sealedForBoth:
-          break;
+      final key = await RoomKeyCache.ensureDmKey(api, dm.id, friendId);
+      if (key == null && await KeyStore.loadIdentity() == null) {
+        _toast('Настрой ключи шифрования в профиле, чтобы писать сообщения');
       }
     } catch (e) {
-      // Friendship still succeeded; sealing is best-effort.
+      // Friendship still succeeded; key derivation is best-effort and retried
+      // when the chat is opened.
       _toast('Не удалось подготовить ключи чата: $e');
     }
   }
@@ -174,6 +171,9 @@ class _FriendsScreenState extends ConsumerState<FriendsScreen>
       _toast('Личный чат с @${f.username} появится чуть позже');
       return;
     }
+    // Make sure the DM pairing key is registered + derived before the chat
+    // opens, so the first message can encrypt without a round-trip stumble.
+    await RoomKeyCache.ensureDmKey(api, dm.id, f.userId);
     if (!mounted) return;
     final dn = (f.displayName ?? '').trim();
     Navigator.push(

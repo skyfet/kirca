@@ -8,6 +8,7 @@ import 'package:web_socket_channel/status.dart' as ws_status;
 
 import '../api.dart';
 import '../config.dart';
+import '../crypto/room_keys.dart';
 import '../state.dart';
 import '../storage/cache.dart';
 
@@ -226,7 +227,15 @@ class UserWs {
   Future<void> _refreshAll() async {
     try {
       final rooms = await Api(token: token).rooms();
-      await RoomsCache.replaceAll(rooms.cast<Map<String, dynamic>>());
+      await RoomsCache.replaceAll(
+        rooms.cast<Map<String, dynamic>>(),
+        currentUserId: userId,
+      );
+      // Re-register every DM peer so pairing keys resolve after a cold start /
+      // reconnect, not just for rooms that arrived via a live room_added.
+      for (final room in await RoomsCache.snapshot()) {
+        if (room.isDm) RoomKeyCache.registerDm(room.id, room.dmPeerId);
+      }
     } catch (_) { /* */ }
     try {
       final inv = await Api(token: token).invites();
@@ -301,6 +310,11 @@ class UserWs {
     final dmPeerId = r['dm_peer_id']?.toString() ??
         RoomsCache.peerFromDmKey(r['dm_key']?.toString(), userId);
     await RoomsCache.upsert(r, dmPeerId: dmPeerId);
+    // DM rooms derive their key from both identities — register the peer so the
+    // key is available the moment the user opens the chat.
+    if (r['kind']?.toString() == 'dm') {
+      RoomKeyCache.registerDm(r['id']?.toString() ?? '', dmPeerId);
+    }
   }
 
   Future<void> _onRoomRemoved(Map<String, dynamic> m) async {
